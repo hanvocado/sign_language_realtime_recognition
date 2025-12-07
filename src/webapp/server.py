@@ -48,12 +48,11 @@ logging.getLogger('mediapipe').setLevel(logging.ERROR)
 # CONFIGURATION
 # ===================================================================
 
-BUFFER_SIZE = 15  # Reduced from 15 - faster buffer fill (480ms @ 25FPS)
-MIN_CONFIDENCE = 0.52  # Slightly higher to filter borderline predictions
-INFERENCE_INTERVAL = 0.15  # Run inference every 150ms
-SMOOTHING_WINDOW = 4  # Voting window size
-MIN_VOTES_FOR_RESULT = 3  # Increased from 2 to 3 - need stronger consensus (75% in window of 4)
-
+BUFFER_SIZE = 15  
+MIN_CONFIDENCE = 0.55
+INFERENCE_INTERVAL = 0.15  
+SMOOTHING_WINDOW = 4  
+MIN_VOTES_FOR_RESULT = 2  
 # ===================================================================
 # FLASK APP
 # ===================================================================
@@ -105,7 +104,7 @@ latest_prediction = {
 }
 
 last_emitted_label = None  
-DUPLICATE_PREVENTION_TIMEOUT = 0.5  
+DUPLICATE_PREVENTION_TIMEOUT = 3.5  
 inference_blocked_until = 0  
 
 # ===================================================================
