@@ -6,63 +6,95 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Vietnamese Sign Language Recognition - Real-time</title>
     <link rel="preconnect" href="https://fonts.gstatic.com">
-    <link href="https://fonts.googleapis.com/css2?family=Ubuntu:wght@500;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Ubuntu:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" integrity="sha512-DTOQO9RWCH3H0DqSVVWY3jOClewwQB6is6E4SdrL+nfsXf00Da82wo41m+sPk5Gl4uAa8mr0sBjc2lXm4UZtAQ==" crossorigin="anonymous" referrerpolicy="no-referrer">
     <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='style.css') }}">
 </head>
 
 <body>
-    <!-- Header -->
-    <div class="header">
-        <h1 id="title">🤟 Vietnamese Sign Language Recognition</h1>
-        <p class="subtitle">Real-Time Detection - FSM-based Recognition!</p>
-        <div class="instructions">
-            <p>✋ <strong>How it works:</strong></p>
-            <ul>
-                <li>👉 Perform a gesture in front of the camera</li>
-                <li>🎬 When motion detected: recording starts automatically</li>
-                <li>⏸️ When you stop moving: gesture is recognized</li>
-                <li>✅ Result displays with confidence score</li>
-            </ul>
-            <p style="color: #ff6b6b; font-weight: bold;">⚠️ Key: The app uses motion detection (FSM) for accurate recognition!</p>
-        </div>
-    </div>
-
-    <!-- Main Container -->
-    <div class="main-container">
-        <!-- Video Section -->
-        <div class="video-section">
-            <div id="container" class="video-container">
-                <canvas id="canvasOutput" style="display:none;"></canvas>
-                <video autoplay playsinline id="videoElement" class="video-stream"></video>
-            </div>
-            <div class="info-box">
-                <p><strong>Server Status:</strong> <span id="status" class="status-connecting">🔌 Connecting...</span></p>
-                <p><strong>FSM State:</strong> <span id="fsm-state" class="state-waiting">⏳ Waiting</span></p>
-                <p><strong>Segment Size:</strong> <span id="segment-size">0</span> frames</p>
-                <p><strong>Still Frames:</strong> <span id="still-count">0</span> / 8</p>
-            </div>
+    <!-- Landing Section -->
+    <section class="landing-section">
+        <!-- Gesture Font Awesome Icons at Top -->
+        <div class="gesture-icons">
+            <div class="gesture-icon">🤟</div>
+            <div class="gesture-icon">✌️</div>
+            <div class="gesture-icon">👉</div>
+            <div class="gesture-icon">🤝</div>
+            <div class="gesture-icon">☝️</div>
         </div>
 
-        <!-- Control & Display Section -->
-        <div class="control-section">
-            <!-- Prediction Display -->
-            <div class="prediction-box">
-                <div class="prediction-label" id="prediction-label">🔍 Waiting for gesture...</div>
-                <div class="prediction-confidence" id="prediction-confidence">Confidence: --</div>
-                <div class="prediction-frames" id="prediction-frames">Frames analyzed: --</div>
+        <!-- Landing Content -->
+        <div class="landing-content">
+            <h1 class="landing-title">Vietnamese Sign Language Recognition</h1>
+            <p class="landing-description">
+                Studying Vietnamese Sign Language (VSL) promotes better awareness and sensitivity to the deaf and hard of hearing community. 
+                Our intelligent system recognizes and translates sign language in real-time, bridging communication gaps with advanced AI technology.
+            </p>
+            <button class="landing-btn" id="startBtn">Start Recognition</button>
+        </div>
+
+        <!-- Decorative circles -->
+        <div class="circle-decoration circle-1"></div>
+        <div class="circle-decoration circle-2"></div>
+    </section>
+
+    <!-- Main App Section -->
+    <section class="app-section" id="app-section">
+        <!-- Header -->
+        <div class="header">
+            <h1 id="title">🤟 Vietnamese Sign Language Recognition</h1>
+        </div>
+
+        <!-- Main Container -->
+        <div class="main-container">
+            <!-- Video Section -->
+            <div class="video-section">
+                <div id="container" class="video-container">
+                    <canvas id="canvasOutput" style="display:none;"></canvas>
+                    <video autoplay playsinline id="videoElement" class="video-stream"></video>
+                </div>
+                <div class="info-box">
+                    <p><strong>Server Status:</strong> <span id="status" class="status-connecting">Connecting...</span></p>
+                    <p><strong>Buffer State:</strong> <span id="fsm-state" class="state-waiting"> Filling...</span></p>
+                    <p><strong>Buffer Size:</strong> <span id="segment-size">0</span> / 15 frames</p>
+                    <p><strong>Inferring:</strong> <span id="still-count">No</span></p>
+                </div>
             </div>
 
-            <!-- Statistics -->
-            <div class="stats-box">
-                <h3>Statistics</h3>
-                <p>Total Predictions: <span id="total-predictions">0</span></p>
-                <div id="history" class="history-log"></div>
+            <!-- Control & Display Section -->
+            <div class="control-section">
+                <!-- Prediction Display -->
+                <div class="prediction-box">
+                    <div class="prediction-label" id="prediction-label">Waiting for gesture...</div>
+                    <div class="prediction-confidence" id="prediction-confidence">Confidence: --</div>
+                    <div class="prediction-frames" id="prediction-frames">Frames analyzed: --</div>
+                </div>
+
+                <!-- Statistics -->
+                <div class="stats-box">
+                    <h3>Statistics</h3>
+                    <p>Total Predictions: <span id="total-predictions">0</span></p>
+                    <div id="history" class="history-log"></div>
+                </div>
+
+                <!-- Summary Box -->
+                <div class="summary-box" style="grid-column: 1 / -1;">
+                    <h3>Recognized Sequence</h3>
+                    <div class="summary-content" id="summary-content">No gestures recognized yet</div>
+                </div>
             </div>
         </div>
-    </div>
+    </section>
 
     <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
     <script src="{{ url_for('static', filename='app.js') }}"></script>
+    <script>
+        // Smooth scroll to app section when Start Recognition button is clicked
+        document.getElementById('startBtn').addEventListener('click', function() {
+            const appSection = document.getElementById('app-section');
+            appSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        });
+    </script>
 </body>
 
 </html>

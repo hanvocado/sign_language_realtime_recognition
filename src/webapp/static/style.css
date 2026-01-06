@@ -10,15 +10,197 @@
 
 html {
     height: 100%;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    background: linear-gradient(135deg, #1e90ff 0%, #00bfff 50%, #0099ff 100%);
     font-family: 'Ubuntu', sans-serif;
     scroll-behavior: smooth;
+    scroll-snap-type: y mandatory;
 }
 
 body {
     min-height: 100vh;
-    padding: 20px;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    padding: 0;
+    background: linear-gradient(135deg, #1e90ff 0%, #00bfff 50%, #0099ff 100%);
+    position: relative;
+    overflow-x: hidden;
+}
+
+/* ================================================================ */
+/* Background pattern with hand gestures in pastel circles - inspired by design reference */
+body::before {
+    display: none;
+}
+
+body > * {
+    position: relative;
+    z-index: 1;
+}
+
+/* ================================================================ */
+/* LANDING SECTION */
+/* ================================================================ */
+
+.landing-section {
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    padding: 60px 20px;
+    position: relative;
+    overflow: hidden;
+    scroll-snap-align: start;
+    scroll-snap-stop: always;
+}
+
+/* Decorative circles */
+.circle-decoration {
+    position: absolute;
+    border-radius: 50%;
+    opacity: 0.1;
+}
+
+.circle-1 {
+    width: 400px;
+    height: 400px;
+    background: rgba(255, 255, 255, 0.3);
+    top: -100px;
+    right: -100px;
+}
+
+.circle-2 {
+    width: 300px;
+    height: 300px;
+    background: rgba(255, 255, 255, 0.2);
+    bottom: -80px;
+    left: -80px;
+}
+
+/* Gesture Icons at Top */
+.gesture-icons {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 30px;
+    margin-bottom: 40px;
+    animation: fadeInDown 0.8s ease-out;
+}
+
+.gesture-icon {
+    width: 80px;
+    height: 80px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 50px;
+    color: #fff;
+    filter: drop-shadow(0 4px 8px rgba(0, 0, 0, 0.3));
+    animation: float 3s ease-in-out infinite;
+    cursor: pointer;
+    transition: transform 0.3s ease;
+    font-family: 'Font Awesome 6 Free', sans-serif;
+    font-weight: 900;
+    line-height: 1;
+    text-align: center;
+}
+
+.gesture-icon:nth-child(1) { animation-delay: 0s; }
+.gesture-icon:nth-child(2) { animation-delay: 0.2s; }
+.gesture-icon:nth-child(3) { animation-delay: 0.4s; }
+.gesture-icon:nth-child(4) { animation-delay: 0.6s; }
+.gesture-icon:nth-child(5) { animation-delay: 0.8s; }
+
+@keyframes float {
+    0%, 100% { transform: translateY(0px); }
+    50% { transform: translateY(-20px); }
+}
+
+/* Landing Content */
+.landing-content {
+    text-align: center;
+    max-width: 700px;
+    z-index: 2;
+    animation: fadeInUp 0.8s ease-out 0.2s both;
+}
+
+.landing-title {
+    color: #fff;
+    font-size: 3rem;
+    font-weight: 700;
+    margin-bottom: 15px;
+    text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.2);
+    line-height: 1.2;
+}
+
+.landing-subtitle {
+    color: rgba(255, 255, 255, 0.95);
+    font-size: 1.3rem;
+    font-weight: 300;
+    margin-bottom: 25px;
+    text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+.landing-description {
+    color: rgba(255, 255, 255, 0.9);
+    font-size: 1rem;
+    line-height: 1.8;
+    margin-bottom: 40px;
+    font-weight: 300;
+}
+
+.landing-btn {
+    background: #fff;
+    color: #1e90ff;
+    border: none;
+    padding: 15px 50px;
+    font-size: 1.1rem;
+    font-weight: 600;
+    border-radius: 50px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    box-shadow: 0 8px 25px rgba(0, 0, 0, 0.15);
+}
+
+.landing-btn:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 12px 35px rgba(0, 0, 0, 0.25);
+}
+
+.landing-btn:active {
+    transform: translateY(-1px);
+}
+
+.landing-btn {
+    background: #fff;
+    color: #1e90ff;
+    border: none;
+    padding: 15px 50px;
+    font-size: 1.1rem;
+    font-weight: 600;
+    border-radius: 50px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    box-shadow: 0 8px 25px rgba(0, 0, 0, 0.15);
+}
+
+.landing-btn:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 12px 35px rgba(0, 0, 0, 0.25);
+}
+
+.landing-btn:active {
+    transform: translateY(-1px);
+}
+
+/* ================================================================ */
+/* APP SECTION */
+/* ================================================================ */
+
+.app-section {
+    min-height: 100vh;
+    padding: 40px 20px;
+    overflow: visible; /* allow inner content to expand and be scrolled by page */
+    scroll-snap-align: start;
+    scroll-snap-stop: always;
 }
 
 /* ================================================================ */
@@ -81,16 +263,21 @@ body {
 
 .main-container {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 1.2fr 1fr;
     gap: 30px;
     max-width: 1400px;
     margin: 0 auto;
     animation: fadeInUp 0.6s ease-out;
+    height: auto;
+    overflow-y: visible;
+    padding-right: 0;
 }
 
 @media (max-width: 1024px) {
     .main-container {
         grid-template-columns: 1fr;
+        height: auto;
+        overflow-y: visible;
     }
 }
 
@@ -112,7 +299,7 @@ body {
     border-radius: 15px;
     overflow: hidden;
     box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.37);
-    border: 2px solid rgba(255, 255, 255, 0.1);
+    border: 2px solid rgba(255, 255, 255, 0.2);
 }
 
 #videoElement {
@@ -252,8 +439,8 @@ body {
 }
 
 .history-log {
-    max-height: 250px;
-    overflow-y: auto;
+    max-height: none;
+    overflow-y: visible;
     border-top: 2px solid #eee;
     padding-top: 12px;
 }
@@ -268,6 +455,40 @@ body {
 
 .history-entry:last-child {
     border-bottom: none;
+}
+
+/* ================================================================ */
+/* SUMMARY BOX */
+/* ================================================================ */
+
+.summary-box {
+    background: rgba(255, 255, 255, 0.95);
+    padding: 25px;
+    border-radius: 15px;
+    box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.37);
+    border: 2px solid rgba(255, 255, 255, 0.3);
+    animation: fadeInUp 0.6s ease-out 0.2s both;
+}
+
+.summary-box h3 {
+    color: #1e90ff;
+    margin-bottom: 15px;
+    font-size: 1.3rem;
+}
+
+.summary-content {
+    color: #333;
+    font-size: 1.1rem;
+    word-break: break-word;
+    line-height: 1.6;
+    font-weight: 500;
+    padding: 15px;
+    background: rgba(30, 144, 255, 0.05);
+    border-radius: 10px;
+    border-left: 4px solid #1e90ff;
+    min-height: 50px;
+    display: flex;
+    align-items: center;
 }
 
 /* ================================================================ */
