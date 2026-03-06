@@ -39,24 +39,24 @@ let currentState = {
 // ===================================================================
 
 socket.on('connect', function () {
-    console.log('✅ Connected to server');
+    console.log('Connected to server');
     isConnected = true;
-    updateStatus('🟢 Connected', 'status-connected');
+    updateStatus('Connected', 'status-connected');
 });
 
 socket.on('connect_error', function (error) {
-    console.error('❌ Connection error:', error);
-    updateStatus('🔴 Connection Error', 'status-error');
+    console.error('Connection error:', error);
+    updateStatus('Connection Error', 'status-error');
 });
 
 socket.on('disconnect', function () {
-    console.log('❌ Disconnected from server');
+    console.log('Disconnected from server');
     isConnected = false;
-    updateStatus('🔴 Disconnected', 'status-error');
+    updateStatus('Disconnected', 'status-error');
 });
 
 socket.on('prediction', function (data) {
-    console.log('🎉 PREDICTION RECEIVED:', data);
+    console.log('PREDICTION RECEIVED:', data);
     
     const label = data.label;
     const confidence = (data.confidence * 100).toFixed(1);
@@ -81,7 +81,7 @@ socket.on('prediction', function (data) {
 });
 
 socket.on('status', function (data) {
-    console.log('📊 STATUS UPDATE:', data);
+    console.log('STATUS UPDATE:', data);
     currentState = data;
     updateStatusDisplay();
 });
@@ -172,21 +172,21 @@ async function initializeCamera() {
             audio: false
         });
         
-        console.log('✅ Camera accessed');
+        console.log('Camera accessed');
         video.srcObject = stream;
         
         video.onloadedmetadata = function () {
-            console.log(`✅ Camera initialized (${video.videoWidth}x${video.videoHeight})`);
+            console.log(`Camera initialized (${video.videoWidth}x${video.videoHeight})`);
             canvas.width = video.videoWidth;
             canvas.height = video.videoHeight;
             
-            console.log('🎬 Starting frame capture at 10 FPS...');
+            console.log('Starting frame capture at 10 FPS...');
             captureFrames();
         };
         
     } catch (error) {
-        console.error('❌ Camera error:', error);
-        updateStatus('🔴 Camera Error', 'status-error');
+        console.error('Camera error:', error);
+        updateStatus('Camera Error', 'status-error');
     }
 }
 
@@ -223,7 +223,7 @@ function captureFrames() {
                 
                 // Debug log every 10 frames
                 if (frameCount % 10 === 0) {
-                    console.log(`📤 Sent ${framesSent} frames (frame #${frameCount})`);
+                    console.log(`Sent ${framesSent} frames (frame #${frameCount})`);
                 }
                 
             } catch (e) {

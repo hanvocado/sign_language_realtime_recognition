@@ -131,8 +131,8 @@ def load_model_and_weights(model_path, label_map_path):
     model.load_state_dict(ck['model_state'], strict=False)
     model.eval()
     
-    logger.info(f"✅ Model loaded: {len(label_list)} classes")
-    logger.info(f"   Classes: {label_list}")
+    logger.info(f"Model loaded: {len(label_list)} classes")
+    logger.info(f"Classes: {label_list}")
     
     return model, label_list
 
@@ -275,14 +275,14 @@ def run_inference():
                         logger.debug(f"Duplicate suppressed: {voted_label} (time since last: {current_time - last_emit_time:.2f}s)")
                         prediction_history.clear()
                 else:
-                    logger.debug(f"⏳ Waiting for consensus: {voted_label} has {vote_count}/{MIN_VOTES_FOR_RESULT} votes")
+                    logger.debug(f"Waiting for consensus: {voted_label} has {vote_count}/{MIN_VOTES_FOR_RESULT} votes")
         else:
             # Low confidence - clear history
             prediction_history.clear()
-            logger.info(f"⚠️  Low confidence ({pred_conf:.3f})")
+            logger.info(f"Low confidence ({pred_conf:.3f})")
     
     except Exception as e:
-        logger.error(f"❌ Inference error: {str(e)}")
+        logger.error(f"Inference error: {str(e)}")
         import traceback
         traceback.print_exc()
     
@@ -299,12 +299,12 @@ def index():
 
 @socketio.on('connect')
 def handle_connect():
-    logger.info("✅ Client connected")
+    logger.info("Client connected")
     emit('connect_response', {'data': 'Connected'})
 
 @socketio.on('disconnect')
 def handle_disconnect():
-    logger.info("❌ Client disconnected")
+    logger.info("Client disconnected")
 
 @socketio.on('frame')
 def handle_frame(data):
@@ -327,7 +327,7 @@ def handle_frame(data):
         # Debug log every 10 frames
         frame_num = data.get('frame_num', 0)
         if frame_num % 10 == 0:
-            logger.info(f"📤 Received frame #{frame_num}, buffer_size={len(frame_buffer)}")
+            logger.info(f"Received frame #{frame_num}, buffer_size={len(frame_buffer)}")
         
         # Add to queue (non-blocking - drops if queue full)
         try:
@@ -342,7 +342,7 @@ def handle_frame(data):
             current_time - last_inference_time >= INFERENCE_INTERVAL):
             
             last_inference_time = current_time
-            logger.info(f"🔄 Buffer full ({len(frame_buffer)} frames), triggering inference...")
+            logger.info(f"Buffer full ({len(frame_buffer)} frames), triggering inference...")
             
             # Run inference in background
             thread = threading.Thread(target=run_inference)
@@ -359,7 +359,7 @@ def handle_frame(data):
             }, skip_sid=True)
     
     except Exception as e:
-        logger.error(f"❌ Frame error: {str(e)}")
+        logger.error(f"Frame error: {str(e)}")
 
 @socketio.on('reset')
 def handle_reset():
@@ -367,7 +367,7 @@ def handle_reset():
     global frame_buffer, prediction_history
     frame_buffer.clear()
     prediction_history.clear()
-    logger.info("🔄 Buffer cleared")
+    logger.info("Buffer cleared")
     emit('reset_response', {'status': 'cleared'})
 
 # ===================================================================
@@ -399,9 +399,9 @@ def initialize_app():
     # Start MediaPipe worker thread
     worker_thread = threading.Thread(target=mediapipe_worker, daemon=True)
     worker_thread.start()
-    logger.info("✅ MediaPipe worker started")
+    logger.info("MediaPipe worker started")
     
-    logger.info(f"🚀 Server ready at http://127.0.0.1:5000")
+    logger.info(f"Server ready at http://127.0.0.1:5000")
 
 # ===================================================================
 # MAIN
