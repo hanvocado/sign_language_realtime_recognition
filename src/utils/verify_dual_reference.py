@@ -410,13 +410,6 @@ class DualReferenceVerifier:
         ax2.legend()
         ax2.grid(True, alpha=0.3)
 
-        # Set same y-axis for morphology row
-        morph_all = np.concatenate([morph1_mag, morph2_mag, morph1_scaled_mag, morph2_scaled_mag])
-        morph_min, morph_max = morph_all.min(), morph_all.max()
-        morph_margin = (morph_max - morph_min) * 0.05
-        ax1.set_ylim(morph_min - morph_margin, morph_max + morph_margin)
-        ax2.set_ylim(morph_min - morph_margin, morph_max + morph_margin)
-
         # ===== ROW 2: TRAJECTORY (Face-centric) =====
         # Left: With scale normalization
         ax3 = axes[1, 0]
@@ -446,12 +439,15 @@ class DualReferenceVerifier:
         ax4.legend()
         ax4.grid(True, alpha=0.3)
 
-        # Set same y-axis for trajectory row
-        traj_all = np.concatenate([traj1_scaled_y, traj2_scaled_y, traj1_unscaled_y, traj2_unscaled_y])
-        traj_min, traj_max = traj_all.min(), traj_all.max()
-        traj_margin = (traj_max - traj_min) * 0.05
-        ax3.set_ylim(traj_min - traj_margin, traj_max + traj_margin)
-        ax4.set_ylim(traj_min - traj_margin, traj_max + traj_margin)
+        # Set same y-axis scale for all 4 plots
+        all_values = np.concatenate([
+            morph1_mag, morph2_mag, morph1_scaled_mag, morph2_scaled_mag,
+            traj1_scaled_y, traj2_scaled_y, traj1_unscaled_y, traj2_unscaled_y
+        ])
+        y_min, y_max = all_values.min(), all_values.max()
+        y_margin = (y_max - y_min) * 0.05
+        for ax in [ax1, ax2, ax3, ax4]:
+            ax.set_ylim(y_min - y_margin, y_max + y_margin)
 
         fig.suptitle(f'{gloss1.upper()} ({video_id1}) vs {gloss2.upper()} ({video_id2})', fontsize=14, fontweight='bold')
         plt.tight_layout(rect=[0, 0, 1, 0.96])
