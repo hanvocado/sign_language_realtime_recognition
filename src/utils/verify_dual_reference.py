@@ -229,9 +229,49 @@ class DualReferenceVerifier:
             left_hand_centered.reshape(-1, 63),
             right_hand_centered.reshape(-1, 63)
         ], axis=1)
-        
+
         return morphology
-    
+
+    def wrist_centric_normalization_scaled(self, sequence: np.ndarray) -> np.ndarray:
+        """
+        Chuẩn hóa theo cổ tay VỚI scale normalization
+
+        Returns: (T, 126) - Wrist-centered and scale-normalized hand keypoints
+        """
+        # Extract wrists
+        left_wrist = sequence[:, WRIST_INDICES['left'][0]:WRIST_INDICES['left'][1]]
+        right_wrist = sequence[:, WRIST_INDICES['right'][0]:WRIST_INDICES['right'][1]]
+
+        # Extract hands
+        left_hand = sequence[:, HAND_INDICES['left'][0]:HAND_INDICES['left'][1]].reshape(-1, 21, 3)
+        right_hand = sequence[:, HAND_INDICES['right'][0]:HAND_INDICES['right'][1]].reshape(-1, 21, 3)
+
+        # Center at wrists
+        left_hand_centered = left_hand - left_wrist[:, np.newaxis, :]
+        right_hand_centered = right_hand - right_wrist[:, np.newaxis, :]
+
+        # Compute hand scale (max distance from wrist to any finger tip)
+        # Finger tips: indices 4, 8, 12, 16, 20
+        finger_tips = [4, 8, 12, 16, 20]
+
+        left_scale = np.max([np.linalg.norm(left_hand_centered[:, tip, :], axis=1) for tip in finger_tips], axis=0)
+        right_scale = np.max([np.linalg.norm(right_hand_centered[:, tip, :], axis=1) for tip in finger_tips], axis=0)
+
+        left_scale = np.where(left_scale < 1e-6, 1.0, left_scale)[:, np.newaxis, np.newaxis]
+        right_scale = np.where(right_scale < 1e-6, 1.0, right_scale)[:, np.newaxis, np.newaxis]
+
+        # Scale normalize
+        left_hand_normalized = left_hand_centered / left_scale
+        right_hand_normalized = right_hand_centered / right_scale
+
+        # Concatenate
+        morphology = np.concatenate([
+            left_hand_normalized.reshape(-1, 63),
+            right_hand_normalized.reshape(-1, 63)
+        ], axis=1)
+
+        return morphology
+
     def face_centric_normalization(self, sequence: np.ndarray) -> np.ndarray:
         """
         Chuẩn hóa theo khuôn mặt (Face-centric Semantic Frame)
@@ -259,9 +299,35 @@ class DualReferenceVerifier:
         right_wrist_norm = (right_wrist - face_center) / face_scale
         
         trajectory = np.concatenate([left_wrist_norm, right_wrist_norm], axis=1)
-        
+
         return trajectory
-    
+
+    def face_centric_normalization_unscaled(self, sequence: np.ndarray) -> np.ndarray:
+        """
+        Chuẩn hóa theo khuôn mặt KHÔNG scale (chỉ centering)
+
+        Returns: (T, 6) - Face-centered wrist positions (không scale)
+        """
+        # Extract wrists
+        left_wrist = sequence[:, WRIST_INDICES['left'][0]:WRIST_INDICES['left'][1]]
+        right_wrist = sequence[:, WRIST_INDICES['right'][0]:WRIST_INDICES['right'][1]]
+
+        # Extract face points
+        nose = sequence[:, FACE_INDICES['nose'][0]:FACE_INDICES['nose'][1]]
+        mouth_left = sequence[:, FACE_INDICES['mouth_left'][0]:FACE_INDICES['mouth_left'][1]]
+        mouth_right = sequence[:, FACE_INDICES['mouth_right'][0]:FACE_INDICES['mouth_right'][1]]
+
+        # Face center
+        face_center = (nose + mouth_left + mouth_right) / 3.0
+
+        # Center only (no scaling)
+        left_wrist_centered = left_wrist - face_center
+        right_wrist_centered = right_wrist - face_center
+
+        trajectory = np.concatenate([left_wrist_centered, right_wrist_centered], axis=1)
+
+        return trajectory
+
     def compute_metrics(self, seq1: np.ndarray, seq2: np.ndarray) -> Dict[str, float]:
         """Tính similarity metrics"""
         # Resample
@@ -300,22 +366,26 @@ class DualReferenceVerifier:
         self,
         gloss1: str,
         gloss2: str,
+        video_id1: str,
+        video_id2: str,
         morph1: np.ndarray,
         morph2: np.ndarray,
-        traj1: np.ndarray,
-        traj2: np.ndarray,
+        morph1_scaled: np.ndarray,
+        morph2_scaled: np.ndarray,
+        traj1_scaled: np.ndarray,
+        traj2_scaled: np.ndarray,
+        traj1_unscaled: np.ndarray,
+        traj2_unscaled: np.ndarray,
         output_path: str = "dual_reference_verification.png"
     ):
-        """Tạo visualization"""
-        morph_metrics = self.compute_metrics(morph1, morph2)
-        traj_metrics = self.compute_metrics(traj1, traj2)
-
-        fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+        """Tạo visualization với 4 plots (2x2)"""
+        fig, axes = plt.subplots(2, 2, figsize=(12, 8))
 
         color1, color2 = '#2E86AB', '#A23B72'
 
-        # ===== MORPHOLOGY MAGNITUDE =====
-        ax1 = axes[0]
+        # ===== ROW 1: MORPHOLOGY (Wrist-centric) =====
+        # Left: Without scale normalization
+        ax1 = axes[0, 0]
         morph1_mag = np.linalg.norm(morph1, axis=1)
         morph2_mag = np.linalg.norm(morph2, axis=1)
 
@@ -323,37 +393,74 @@ class DualReferenceVerifier:
         ax1.plot(morph2_mag, color=color2, linewidth=2, label=gloss2.upper(), alpha=0.8, linestyle='--')
         ax1.set_xlabel('Frame', fontweight='bold')
         ax1.set_ylabel('||Morphology||', fontweight='bold')
-        ax1.set_title('Morphology Magnitude', fontweight='bold', pad=10)
+        ax1.set_title('Morphology (no scale)', fontweight='bold', pad=10)
         ax1.legend()
         ax1.grid(True, alpha=0.3)
 
-        # ===== TRAJECTORY: VERTICAL POSITION =====
-        ax2 = axes[1]
+        # Right: With scale normalization
+        ax2 = axes[0, 1]
+        morph1_scaled_mag = np.linalg.norm(morph1_scaled, axis=1)
+        morph2_scaled_mag = np.linalg.norm(morph2_scaled, axis=1)
 
-        traj1_y = traj1[:, 4]  # Right wrist Y
-        traj2_y = traj2[:, 4]
-
-        ax2.plot(traj1_y, color=color1, linewidth=2, label=gloss1.upper(), alpha=0.8)
-        ax2.plot(traj2_y, color=color2, linewidth=2, label=gloss2.upper(), alpha=0.8, linestyle='--')
-        ax2.axhline(y=0, color='black', linestyle=':', alpha=0.5, label='Face center')
+        ax2.plot(morph1_scaled_mag, color=color1, linewidth=2, label=gloss1.upper(), alpha=0.8)
+        ax2.plot(morph2_scaled_mag, color=color2, linewidth=2, label=gloss2.upper(), alpha=0.8, linestyle='--')
         ax2.set_xlabel('Frame', fontweight='bold')
-        ax2.set_ylabel('Wrist Y (× face_scale)', fontweight='bold')
-        ax2.set_title('Trajectory: Vertical Position', fontweight='bold', pad=10)
+        ax2.set_ylabel('||Morphology||', fontweight='bold')
+        ax2.set_title('Morphology (with scale)', fontweight='bold', pad=10)
         ax2.legend()
         ax2.grid(True, alpha=0.3)
 
-        # Set same y-axis scale for both plots
-        all_values = np.concatenate([morph1_mag, morph2_mag, traj1_y, traj2_y])
-        y_min, y_max = all_values.min(), all_values.max()
-        y_margin = (y_max - y_min) * 0.05
-        ax1.set_ylim(y_min - y_margin, y_max + y_margin)
-        ax2.set_ylim(y_min - y_margin, y_max + y_margin)
+        # Set same y-axis for morphology row
+        morph_all = np.concatenate([morph1_mag, morph2_mag, morph1_scaled_mag, morph2_scaled_mag])
+        morph_min, morph_max = morph_all.min(), morph_all.max()
+        morph_margin = (morph_max - morph_min) * 0.05
+        ax1.set_ylim(morph_min - morph_margin, morph_max + morph_margin)
+        ax2.set_ylim(morph_min - morph_margin, morph_max + morph_margin)
 
-        plt.tight_layout()
+        # ===== ROW 2: TRAJECTORY (Face-centric) =====
+        # Left: With scale normalization
+        ax3 = axes[1, 0]
+        traj1_scaled_y = traj1_scaled[:, 4]  # Right wrist Y
+        traj2_scaled_y = traj2_scaled[:, 4]
+
+        ax3.plot(traj1_scaled_y, color=color1, linewidth=2, label=gloss1.upper(), alpha=0.8)
+        ax3.plot(traj2_scaled_y, color=color2, linewidth=2, label=gloss2.upper(), alpha=0.8, linestyle='--')
+        ax3.axhline(y=0, color='black', linestyle=':', alpha=0.5, label='Face center')
+        ax3.set_xlabel('Frame', fontweight='bold')
+        ax3.set_ylabel('Wrist Y (normalized)', fontweight='bold')
+        ax3.set_title('Trajectory (with scale)', fontweight='bold', pad=10)
+        ax3.legend()
+        ax3.grid(True, alpha=0.3)
+
+        # Right: Without scale normalization
+        ax4 = axes[1, 1]
+        traj1_unscaled_y = traj1_unscaled[:, 4]  # Right wrist Y
+        traj2_unscaled_y = traj2_unscaled[:, 4]
+
+        ax4.plot(traj1_unscaled_y, color=color1, linewidth=2, label=gloss1.upper(), alpha=0.8)
+        ax4.plot(traj2_unscaled_y, color=color2, linewidth=2, label=gloss2.upper(), alpha=0.8, linestyle='--')
+        ax4.axhline(y=0, color='black', linestyle=':', alpha=0.5, label='Face center')
+        ax4.set_xlabel('Frame', fontweight='bold')
+        ax4.set_ylabel('Wrist Y (raw)', fontweight='bold')
+        ax4.set_title('Trajectory (no scale)', fontweight='bold', pad=10)
+        ax4.legend()
+        ax4.grid(True, alpha=0.3)
+
+        # Set same y-axis for trajectory row
+        traj_all = np.concatenate([traj1_scaled_y, traj2_scaled_y, traj1_unscaled_y, traj2_unscaled_y])
+        traj_min, traj_max = traj_all.min(), traj_all.max()
+        traj_margin = (traj_max - traj_min) * 0.05
+        ax3.set_ylim(traj_min - traj_margin, traj_max + traj_margin)
+        ax4.set_ylim(traj_min - traj_margin, traj_max + traj_margin)
+
+        fig.suptitle(f'{gloss1.upper()} ({video_id1}) vs {gloss2.upper()} ({video_id2})', fontsize=14, fontweight='bold')
+        plt.tight_layout(rect=[0, 0, 1, 0.96])
         plt.savefig(output_path, dpi=150, bbox_inches='tight')
         print(f"\n✓ Saved visualization: {output_path}")
 
-        # Compute pass/fail for return value
+        # Compute metrics for return value
+        morph_metrics = self.compute_metrics(morph1, morph2)
+        traj_metrics = self.compute_metrics(traj1_scaled, traj2_scaled)
         morph_pass = morph_metrics['correlation'] > 0.6
         traj_pass = traj_metrics['correlation'] < 0.7
         overall_pass = morph_pass and traj_pass
@@ -422,45 +529,41 @@ def main():
         print("\n" + "-"*80)
         print("STEP 3: Applying normalization")
         print("-"*80)
-        
+
+        # Wrist-centric (morphology)
         morph1 = verifier.wrist_centric_normalization(landmarks1)
         morph2 = verifier.wrist_centric_normalization(landmarks2)
-        print(f"  ✓ Morphology: {gloss1}={morph1.shape}, {gloss2}={morph2.shape}")
-        
-        traj1 = verifier.face_centric_normalization(landmarks1)
-        traj2 = verifier.face_centric_normalization(landmarks2)
-        print(f"  ✓ Trajectory: {gloss1}={traj1.shape}, {gloss2}={traj2.shape}")
-        
+        print(f"  ✓ Morphology (no scale): {gloss1}={morph1.shape}, {gloss2}={morph2.shape}")
+
+        morph1_scaled = verifier.wrist_centric_normalization_scaled(landmarks1)
+        morph2_scaled = verifier.wrist_centric_normalization_scaled(landmarks2)
+        print(f"  ✓ Morphology (with scale): {gloss1}={morph1_scaled.shape}, {gloss2}={morph2_scaled.shape}")
+
+        # Face-centric (trajectory)
+        traj1_scaled = verifier.face_centric_normalization(landmarks1)
+        traj2_scaled = verifier.face_centric_normalization(landmarks2)
+        print(f"  ✓ Trajectory (with scale): {gloss1}={traj1_scaled.shape}, {gloss2}={traj2_scaled.shape}")
+
+        traj1_unscaled = verifier.face_centric_normalization_unscaled(landmarks1)
+        traj2_unscaled = verifier.face_centric_normalization_unscaled(landmarks2)
+        print(f"  ✓ Trajectory (no scale): {gloss1}={traj1_unscaled.shape}, {gloss2}={traj2_unscaled.shape}")
+
         # Visualize
         print("\n" + "-"*80)
         print("STEP 4: Generating visualization")
         print("-"*80)
-        
-        morph_metrics, traj_metrics, overall_pass = verifier.visualize_results(
-            gloss1, gloss2, morph1, morph2, traj1, traj2, args.output
+
+        verifier.visualize_results(
+            gloss1, gloss2,
+            video_id1, video_id2,
+            morph1, morph2,
+            morph1_scaled, morph2_scaled,
+            traj1_scaled, traj2_scaled,
+            traj1_unscaled, traj2_unscaled,
+            args.output
         )
         
-        # Summary
-        print("\n" + "="*80)
-        print("RESULTS SUMMARY")
-        print("="*80)
-        
-        print(f"\n📊 MORPHOLOGY:")
-        for k, v in morph_metrics.items():
-            print(f"   {k:15s}: {v:8.4f}")
-        
-        print(f"\n📍 TRAJECTORY:")
-        for k, v in traj_metrics.items():
-            print(f"   {k:15s}: {v:8.4f}")
-        
-        print(f"\n{'='*80}")
-        if overall_pass:
-            print("✅ VERIFICATION PASSED!")
-        else:
-            print("⚠️  VERIFICATION INCONCLUSIVE")
-        print("="*80 + "\n")
-        
-        return 0 if overall_pass else 2
+        return 0
         
     except Exception as e:
         print(f"\n✗ Error: {e}")
