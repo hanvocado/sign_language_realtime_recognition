@@ -411,31 +411,31 @@ class DualReferenceVerifier:
         ax2.grid(True, alpha=0.3)
 
         # ===== ROW 2: TRAJECTORY (Face-centric) =====
-        # Left: With scale normalization
+        # Left: Without scale normalization
         ax3 = axes[1, 0]
-        traj1_scaled_y = traj1_scaled[:, 4]  # Right wrist Y
-        traj2_scaled_y = traj2_scaled[:, 4]
-
-        ax3.plot(traj1_scaled_y, color=color1, linewidth=2, label=gloss1.upper(), alpha=0.8)
-        ax3.plot(traj2_scaled_y, color=color2, linewidth=2, label=gloss2.upper(), alpha=0.8, linestyle='--')
-        ax3.axhline(y=0, color='black', linestyle=':', alpha=0.5, label='Face center')
-        ax3.set_xlabel('Frame', fontweight='bold')
-        ax3.set_ylabel('Wrist Y (normalized)', fontweight='bold')
-        ax3.set_title('Trajectory (with scale)', fontweight='bold', pad=10)
-        ax3.legend()
-        ax3.grid(True, alpha=0.3)
-
-        # Right: Without scale normalization
-        ax4 = axes[1, 1]
         traj1_unscaled_y = traj1_unscaled[:, 4]  # Right wrist Y
         traj2_unscaled_y = traj2_unscaled[:, 4]
 
-        ax4.plot(traj1_unscaled_y, color=color1, linewidth=2, label=gloss1.upper(), alpha=0.8)
-        ax4.plot(traj2_unscaled_y, color=color2, linewidth=2, label=gloss2.upper(), alpha=0.8, linestyle='--')
+        ax3.plot(traj1_unscaled_y, color=color1, linewidth=2, label=gloss1.upper(), alpha=0.8)
+        ax3.plot(traj2_unscaled_y, color=color2, linewidth=2, label=gloss2.upper(), alpha=0.8, linestyle='--')
+        ax3.axhline(y=0, color='black', linestyle=':', alpha=0.5, label='Face center')
+        ax3.set_xlabel('Frame', fontweight='bold')
+        ax3.set_ylabel('Wrist Y (raw)', fontweight='bold')
+        ax3.set_title('Trajectory (no scale)', fontweight='bold', pad=10)
+        ax3.legend()
+        ax3.grid(True, alpha=0.3)
+
+        # Right: With scale normalization
+        ax4 = axes[1, 1]
+        traj1_scaled_y = traj1_scaled[:, 4]  # Right wrist Y
+        traj2_scaled_y = traj2_scaled[:, 4]
+
+        ax4.plot(traj1_scaled_y, color=color1, linewidth=2, label=gloss1.upper(), alpha=0.8)
+        ax4.plot(traj2_scaled_y, color=color2, linewidth=2, label=gloss2.upper(), alpha=0.8, linestyle='--')
         ax4.axhline(y=0, color='black', linestyle=':', alpha=0.5, label='Face center')
         ax4.set_xlabel('Frame', fontweight='bold')
-        ax4.set_ylabel('Wrist Y (raw)', fontweight='bold')
-        ax4.set_title('Trajectory (no scale)', fontweight='bold', pad=10)
+        ax4.set_ylabel('Wrist Y (normalized)', fontweight='bold')
+        ax4.set_title('Trajectory (with scale)', fontweight='bold', pad=10)
         ax4.legend()
         ax4.grid(True, alpha=0.3)
 
