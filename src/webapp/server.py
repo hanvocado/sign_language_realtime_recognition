@@ -385,9 +385,16 @@ def initialize_app():
     logger.info(f"Device: {DEVICE}")
     logger.info(f"Buffer: {BUFFER_SIZE} | Confidence: {MIN_CONFIDENCE} | Smoothing: {SMOOTHING_WINDOW}")
     
-    # Load model
-    model_path = str(ModelConfig.MODEL_PATH)
-    label_map_path = str(ModelConfig.LABEL_MAP_PATH)
+    # Load model from production manifest or fallback
+    config = ModelConfig.get_active_model_paths()
+    model_path = str(config['model_path'])
+    label_map_path = str(config['label_map_path'])
+    
+    if config['production']:
+        logger.info("✅ Using production model from MLflow registry")
+    else:
+        logger.warning("⚠️ Using fallback model path (no production manifest found)")
+    
     model, label_list = load_model_and_weights(model_path, label_map_path)
     
     # Initialize MediaPipe (shared instance)
@@ -402,7 +409,7 @@ def initialize_app():
     worker_thread.start()
     logger.info("✅ MediaPipe worker started")
     
-    logger.info(f"🚀 Server ready at http://127.0.0.1:5000")
+    logger.info("🚀 Server ready at http://0.0.0.0:5000")
 
 # ===================================================================
 # MAIN
@@ -410,4 +417,10 @@ def initialize_app():
 
 if __name__ == '__main__':
     initialize_app()
-    socketio.run(app, host='127.0.0.1', port=5000, debug=False)
+    socketio.run(
+        app,
+        host='0.0.0.0',
+        port=5000,
+        debug=False,
+        allow_unsafe_werkzeug=True,
+    )

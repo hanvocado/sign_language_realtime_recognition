@@ -31,6 +31,18 @@ from src.model.data_loader import SignLanguageDataset, create_data_loaders
 from src.utils.logger import *
 from src.config.config import *
 
+
+def str2bool(value):
+    """Parse common boolean string representations for CLI arguments."""
+    if isinstance(value, bool):
+        return value
+    val = str(value).strip().lower()
+    if val in {"true", "1", "yes", "y", "on"}:
+        return True
+    if val in {"false", "0", "no", "n", "off"}:
+        return False
+    raise argparse.ArgumentTypeError(f"Invalid boolean value: {value}")
+
 # =====================================================
 # Models
 # =====================================================
@@ -188,14 +200,25 @@ def train(args):
     # Data Loading
     # =========================================================================
     
+    # Build runtime augmentation config from CLI
+    augment_config = {
+        'rotation_range': args.rotation_range,
+        'scale_range': (args.scale_min, args.scale_max),
+        'shift_range': args.shift_range,
+        'flip_prob': args.flip_prob,
+        'time_mask_prob': args.time_mask_prob,
+        'time_mask_max': args.time_mask_max,
+    }
+
     # Create datasets
     train_ds = SignLanguageDataset(
         args.data_dir,
         seq_len=args.seq_len,
         source=args.source,
         split='train',
-        normalize=True,
-        augment=True,  # Augment training data
+        normalize=args.normalize,
+        augment=args.augment_train,
+        augment_config=augment_config,
     )
     
     label_map = train_ds.get_label_map()
@@ -206,7 +229,7 @@ def train(args):
         seq_len=args.seq_len,
         source=args.source,
         split='val',
-        normalize=True,
+        normalize=args.normalize,
         augment=False,  # No augmentation for validation
         label_map=label_map,
     )
@@ -437,7 +460,7 @@ def train(args):
             seq_len=args.seq_len,
             source=args.source,
             split='test',
-            normalize=True,
+            normalize=args.normalize,
             augment=False,
             label_map=label_map,
         )
@@ -513,6 +536,26 @@ if __name__ == '__main__':
                         help='Early stopping patience')
     parser.add_argument('--num_workers', type=int, default=0,
                         help='Data loading workers')
+
+    # Data processing
+    parser.add_argument('--normalize', type=str2bool, default=True,
+                        help='Enable keypoint normalization (true/false)')
+    parser.add_argument('--augment_train', type=str2bool, default=True,
+                        help='Enable runtime augmentation on training split (true/false)')
+    parser.add_argument('--rotation_range', type=float, default=15.0,
+                        help='Max rotation in degrees for augmentation')
+    parser.add_argument('--scale_min', type=float, default=0.85,
+                        help='Min scale factor for augmentation')
+    parser.add_argument('--scale_max', type=float, default=1.15,
+                        help='Max scale factor for augmentation')
+    parser.add_argument('--shift_range', type=float, default=0.08,
+                        help='Max XY translation range for augmentation')
+    parser.add_argument('--flip_prob', type=float, default=0.5,
+                        help='Probability of horizontal flip augmentation')
+    parser.add_argument('--time_mask_prob', type=float, default=0.2,
+                        help='Probability of random temporal masking augmentation')
+    parser.add_argument('--time_mask_max', type=int, default=3,
+                        help='Max consecutive frames to mask in time masking')
     
     # Output
     parser.add_argument('--ckpt_dir', default='models/checkpoints',
