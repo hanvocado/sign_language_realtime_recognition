@@ -29,9 +29,10 @@ def _build_catalog():
     minio_access = os.environ.get("AWS_ACCESS_KEY_ID", "minioadmin")
     minio_secret = os.environ.get("AWS_SECRET_ACCESS_KEY", "minioadmin")
     warehouse = os.environ.get("ICEBERG_WAREHOUSE", "s3://data/iceberg")
+    namespace = os.environ.get("ICEBERG_NAMESPACE", "sign_language")
 
     return load_catalog(
-        "vsl_catalog",
+        f"{namespace}_catalog",
         type="sql",
         uri=f"postgresql+psycopg2://{postgres_user}:{postgres_password}@{postgres_host}:{postgres_port}/{postgres_db}",
         warehouse=warehouse,
@@ -47,8 +48,9 @@ def _build_catalog():
 
 def _ensure_table(table_name: str):
     catalog = _build_catalog()
-    namespace = ("vsl",)
-    identifier = ("vsl", table_name)
+    namespace_name = os.environ.get("ICEBERG_NAMESPACE", "sign_language")
+    namespace = (namespace_name,)
+    identifier = (namespace_name, table_name)
 
     try:
         catalog.load_namespace_properties(namespace)
@@ -99,8 +101,9 @@ def append_inventory_rows(table_name: str, rows: List[Dict]) -> int:
 def resolve_latest_run_id(table_name: str) -> Optional[str]:
     """Return the latest run_id from an inventory table, or None if empty."""
     import pyarrow.compute as pc
+    namespace = os.environ.get("ICEBERG_NAMESPACE", "sign_language")
     catalog = _build_catalog()
-    table = catalog.load_table(("vsl", table_name))
+    table = catalog.load_table((namespace, table_name))
     # Project only the two columns needed so we avoid reading the full table
     arrow = table.scan(selected_fields=("run_id", "inserted_at")).to_arrow()
     if arrow.num_rows == 0:
@@ -120,8 +123,9 @@ def resolve_latest_run_id(table_name: str) -> Optional[str]:
 def get_run_rows(table_name: str, run_id: str) -> List[Dict]:
     """Fetch all rows for a specific run_id from inventory table."""
     from pyiceberg.expressions import EqualTo
+    namespace = os.environ.get("ICEBERG_NAMESPACE", "sign_language")
     catalog = _build_catalog()
-    table = catalog.load_table(("vsl", table_name))
+    table = catalog.load_table((namespace, table_name))
     arrow = table.scan(row_filter=EqualTo("run_id", run_id)).to_arrow()
     if arrow.num_rows == 0:
         return []

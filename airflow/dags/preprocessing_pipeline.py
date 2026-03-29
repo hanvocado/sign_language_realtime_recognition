@@ -256,6 +256,7 @@ def store_to_minio(**context):
     print(f"✅ Uploaded {uploaded_landmark_files} landmark files to MinIO")
 
     # Append inventory to Iceberg using Spark engine
+    namespace = os.environ.get("ICEBERG_NAMESPACE", "sign_language")
     spark_master = os.environ.get("SPARK_MASTER_URL", "spark://spark-master:7077")
     spark_packages = os.environ.get(
         "SPARK_ICEBERG_PACKAGES",
@@ -323,7 +324,7 @@ def store_to_minio(**context):
                 )
                 deleted = cur.rowcount
             conn.commit()
-            print(f"⚠️ Repaired stale Iceberg catalog pointer for vsl.{table_name} (deleted_rows={deleted})")
+            print(f"⚠️ Repaired stale Iceberg catalog pointer for {namespace}.{table_name} (deleted_rows={deleted})")
         finally:
             conn.close()
 
@@ -336,7 +337,7 @@ def store_to_minio(**context):
             _repair_catalog_entry(table_name)
             retry_result = subprocess.run(cmd, capture_output=True, text=True, cwd=PROJECT_ROOT)
             if retry_result.returncode == 0:
-                print(f"✅ Spark append recovered after catalog repair for vsl.{table_name}")
+                print(f"✅ Spark append recovered after catalog repair for {namespace}.{table_name}")
                 return retry_result
             result = retry_result
 
@@ -368,8 +369,8 @@ def store_to_minio(**context):
         "minio_bucket": "data",
         "landmark_files_count": uploaded_landmark_files,
         "iceberg_tables": {
-            "raw": "vsl.raw_inventory",
-            "landmarks": "vsl.landmarks_inventory",
+            "raw": f"{namespace}.raw_inventory",
+            "landmarks": f"{namespace}.landmarks_inventory",
         },
     }
     
@@ -386,7 +387,7 @@ def store_to_minio(**context):
 # ================================================================
 
 with DAG(
-    dag_id="vsl_preprocessing_pipeline",
+    dag_id="preprocessing_pipeline",
     default_args=default_args,
     description="Sign Language Preprocessing: Videos → Landmarks → MinIO",
     schedule_interval=None,  # Manual trigger

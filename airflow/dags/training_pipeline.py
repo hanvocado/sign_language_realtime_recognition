@@ -53,7 +53,8 @@ minio_client = Minio(
 
 # Set MLflow tracking URI
 mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
-mlflow.set_experiment("vsl_training")
+MLFLOW_EXPERIMENT = os.environ.get("MLFLOW_EXPERIMENT", "sign_language_training")
+mlflow.set_experiment(MLFLOW_EXPERIMENT)
 
 # Default Airflow arguments
 default_args = {
@@ -444,7 +445,7 @@ def register_model(**context):
     try:
         client = MlflowClient(tracking_uri=MLFLOW_TRACKING_URI)
         
-        model_name = "vsl_sign_language_model"
+        model_name = os.environ.get("MLFLOW_MODEL_NAME", "sign_language_model")
 
         # Create registered model once (idempotent)
         try:
@@ -522,7 +523,7 @@ def update_production_manifest(**context):
 # ================================================================
 
 with DAG(
-    dag_id="vsl_training_pipeline",
+    dag_id="training_pipeline",
     default_args=default_args,
     description="Sign Language Model Training: Landmarks → Train → MLflow Registry → Deployment",
     schedule_interval=None,  # Manual trigger

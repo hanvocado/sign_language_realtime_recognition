@@ -30,21 +30,22 @@ def build_spark(app_name: str, master: Optional[str] = None) -> SparkSession:
     warehouse = os.environ.get("ICEBERG_WAREHOUSE", "s3a://data/iceberg")
     if warehouse.startswith("s3://"):
         warehouse = warehouse.replace("s3://", "s3a://", 1)
+    namespace = os.environ.get("ICEBERG_NAMESPACE", "sign_language")
 
     builder = SparkSession.builder.appName(app_name)
     if master:
         builder = builder.master(master)
 
     spark = (
-        builder.config("spark.sql.catalog.vsl", "org.apache.iceberg.spark.SparkCatalog")
-        .config("spark.sql.catalog.vsl.type", "jdbc")
+        builder.config(f"spark.sql.catalog.{namespace}", "org.apache.iceberg.spark.SparkCatalog")
+        .config(f"spark.sql.catalog.{namespace}.type", "jdbc")
         .config(
-            "spark.sql.catalog.vsl.uri",
+            f"spark.sql.catalog.{namespace}.uri",
             f"jdbc:postgresql://{postgres_host}:{postgres_port}/{postgres_db}",
         )
-        .config("spark.sql.catalog.vsl.jdbc.user", postgres_user)
-        .config("spark.sql.catalog.vsl.jdbc.password", postgres_password)
-        .config("spark.sql.catalog.vsl.warehouse", warehouse)
+        .config(f"spark.sql.catalog.{namespace}.jdbc.user", postgres_user)
+        .config(f"spark.sql.catalog.{namespace}.jdbc.password", postgres_password)
+        .config(f"spark.sql.catalog.{namespace}.warehouse", warehouse)
         .config("spark.hadoop.fs.s3a.path.style.access", "true")
         .config("spark.hadoop.fs.s3a.endpoint", minio_endpoint)
         .config("spark.hadoop.fs.s3a.access.key", minio_access)
@@ -54,15 +55,17 @@ def build_spark(app_name: str, master: Optional[str] = None) -> SparkSession:
         .getOrCreate()
     )
 
-    spark.sql("CREATE NAMESPACE IF NOT EXISTS vsl")
+    spark.sql(f"CREATE NAMESPACE IF NOT EXISTS {namespace}")
     return spark
 
 
 def ensure_inventory_table(spark: SparkSession, table: str) -> None:
+    namespace = os.environ.get("ICEBERG_NAMESPACE", "sign_language")
+
     def _create_table() -> None:
         spark.sql(
             f"""
-            CREATE TABLE IF NOT EXISTS vsl.{table} (
+            CREATE TABLE IF NOT EXISTS {namespace}.{table} (
               run_id STRING,
               object_path STRING,
               file_type STRING,
@@ -74,14 +77,14 @@ def ensure_inventory_table(spark: SparkSession, table: str) -> None:
             """
         )
 
-    exists = spark.sql(f"SHOW TABLES IN vsl LIKE '{table}'").count() > 0
+    exists = spark.sql(f"SHOW TABLES IN {namespace} LIKE '{table}'").count() > 0
     if not exists:
         _create_table()
         return
 
     try:
         # Force metadata resolution so we can detect broken catalog pointers early.
-        spark.sql(f"SELECT 1 FROM vsl.{table} LIMIT 1").collect()
+        spark.sql(f"SELECT 1 FROM {namespace}.{table} LIMIT 1").collect()
     except Exception as exc:
         message = str(exc)
         missing_metadata = "FileNotFoundException" in message and "/metadata/" in message
@@ -95,20 +98,21 @@ def ensure_inventory_table(spark: SparkSession, table: str) -> None:
             raise
 
         print(
-            f"WARN: Iceberg table vsl.{table} has missing metadata. "
+            f"WARN: Iceberg table {namespace}.{table} has missing metadata. "
             "Dropping stale table entry and recreating it."
         )
-        spark.sql(f"DROP TABLE IF EXISTS vsl.{table}")
+        spark.sql(f"DROP TABLE IF EXISTS {namespace}.{table}")
         _create_table()
 
 
 def cmd_append(args: argparse.Namespace) -> None:
+    namespace = os.environ.get("ICEBERG_NAMESPACE", "sign_language")
     spark = build_spark("append-iceberg-inventory", args.master)
     ensure_inventory_table(spark, args.table)
 
     df = spark.read.option("multiline", "true").json(args.rows_file)
     if df.limit(1).count() == 0:
-        print(f"APPENDED 0 rows to vsl.{args.table}")
+        print(f"APPENDED 0 rows to {namespace}.{args.table}")
         spark.stop()
         return
 
@@ -117,19 +121,20 @@ def cmd_append(args: argparse.Namespace) -> None:
 
     df.cache()
     row_count = df.count()
-    df.writeTo(f"vsl.{args.table}").append()
-    print(f"APPENDED {row_count} rows to vsl.{args.table}")
+    df.writeTo(f"{namespace}.{args.table}").append()
+    print(f"APPENDED {row_count} rows to {namespace}.{args.table}")
     spark.stop()
 
 
 def cmd_latest_run(args: argparse.Namespace) -> None:
+    namespace = os.environ.get("ICEBERG_NAMESPACE", "sign_language")
     spark = build_spark("latest-run-iceberg", args.master)
     ensure_inventory_table(spark, args.table)
 
     result = spark.sql(
         f"""
         SELECT run_id, MAX(inserted_at) AS max_ts
-        FROM vsl.{args.table}
+        FROM {namespace}.{args.table}
         GROUP BY run_id
         ORDER BY max_ts DESC
         LIMIT 1
@@ -142,13 +147,14 @@ def cmd_latest_run(args: argparse.Namespace) -> None:
 
 
 def cmd_rows_by_run(args: argparse.Namespace) -> None:
+    namespace = os.environ.get("ICEBERG_NAMESPACE", "sign_language")
     spark = build_spark("rows-by-run-iceberg", args.master)
     ensure_inventory_table(spark, args.table)
 
     from pyspark.sql.functions import col
 
     rows = (
-        spark.table(f"vsl.{args.table}")
+        spark.table(f"{namespace}.{args.table}")
         .filter(col("run_id") == args.run_id)
         .toJSON()
         .collect()
