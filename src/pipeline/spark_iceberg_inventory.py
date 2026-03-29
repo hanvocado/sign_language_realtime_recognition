@@ -145,13 +145,14 @@ def cmd_rows_by_run(args: argparse.Namespace) -> None:
     spark = build_spark("rows-by-run-iceberg", args.master)
     ensure_inventory_table(spark, args.table)
 
-    rows = spark.sql(
-        f"""
-        SELECT run_id, object_path, file_type, label, size_bytes, etag, inserted_at
-        FROM vsl.{args.table}
-        WHERE run_id = '{args.run_id}'
-        """
-    ).toJSON().collect()
+    from pyspark.sql.functions import col
+
+    rows = (
+        spark.table(f"vsl.{args.table}")
+        .filter(col("run_id") == args.run_id)
+        .toJSON()
+        .collect()
+    )
 
     parsed = [json.loads(r) for r in rows]
     with open(args.output_file, "w", encoding="utf-8") as f:

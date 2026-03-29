@@ -484,9 +484,26 @@ def update_production_manifest(**context):
     model_path = context["task_instance"].xcom_pull(task_ids="train_model", key="model_path")
     mlflow_run_id = context["task_instance"].xcom_pull(task_ids="log_to_mlflow", key="mlflow_run_id")
     
+    # Convert absolute paths to paths relative to PROJECT_ROOT so the
+    # manifest is portable across containers (Airflow vs. webapp).
+    project_root = Path(PROJECT_ROOT)
+    try:
+        rel_model_path = Path(model_path).relative_to(project_root)
+        rel_run_dir = Path(run_dir).relative_to(project_root)
+    except ValueError:
+        # Paths are not under PROJECT_ROOT; store as-is (non-portable across containers)
+        import warnings
+        warnings.warn(
+            f"model_path or run_dir is outside PROJECT_ROOT ({PROJECT_ROOT}). "
+            "Storing absolute paths in production.json — these may not resolve in other containers.",
+            RuntimeWarning,
+        )
+        rel_model_path = model_path
+        rel_run_dir = run_dir
+
     manifest = {
-        "model_path": model_path,
-        "run_dir": run_dir,
+        "model_path": str(rel_model_path),
+        "run_dir": str(rel_run_dir),
         "mlflow_run_id": mlflow_run_id,
         "mlflow_tracking_uri": MLFLOW_TRACKING_URI,
         "timestamp": datetime.now().isoformat(),
@@ -498,7 +515,7 @@ def update_production_manifest(**context):
         json.dump(manifest, f, indent=2)
     
     print(f"✅ Production manifest updated: {manifest_path}")
-    print(f"✅ Deployment ready! Flask will load model from: {model_path}")
+    print(f"✅ Deployment ready! Flask will load model from: {rel_model_path}")
 
 # ================================================================
 # DAG Definition

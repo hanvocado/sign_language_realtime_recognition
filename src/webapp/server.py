@@ -391,7 +391,7 @@ def initialize_app():
     label_map_path = str(config['label_map_path'])
     
     if config['production']:
-        logger.info("✅ Using production model from MLflow registry")
+        logger.info("✅ Using production model from manifest (production.json)")
     else:
         logger.warning("⚠️ Using fallback model path (no production manifest found)")
     
@@ -417,10 +417,11 @@ def initialize_app():
 
 if __name__ == '__main__':
     initialize_app()
+    dev_mode = os.environ.get("FLASK_DEV", "false").lower() == "true"
     socketio.run(
         app,
         host='0.0.0.0',
         port=5000,
-        debug=False,
-        allow_unsafe_werkzeug=True,
+        debug=dev_mode,
+        allow_unsafe_werkzeug=dev_mode,
     )

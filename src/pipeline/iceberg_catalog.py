@@ -98,23 +98,31 @@ def append_inventory_rows(table_name: str, rows: List[Dict]) -> int:
 
 def resolve_latest_run_id(table_name: str) -> Optional[str]:
     """Return the latest run_id from an inventory table, or None if empty."""
+    import pyarrow.compute as pc
     catalog = _build_catalog()
     table = catalog.load_table(("vsl", table_name))
-    arrow = table.scan().to_arrow()
+    # Project only the two columns needed so we avoid reading the full table
+    arrow = table.scan(selected_fields=("run_id", "inserted_at")).to_arrow()
     if arrow.num_rows == 0:
         return None
 
-    data = arrow.to_pylist()
-    # inserted_at is timezone-aware datetime from pyarrow conversion
-    latest = max(data, key=lambda x: x.get("inserted_at") or datetime(1970, 1, 1, tzinfo=timezone.utc))
-    return latest.get("run_id")
+    inserted_at = arrow["inserted_at"]
+    max_ts = pc.max(inserted_at)
+    if max_ts.is_valid is False or max_ts.as_py() is None:
+        return None
+    mask = pc.equal(inserted_at, max_ts)
+    filtered = arrow.filter(mask)
+    if filtered.num_rows == 0:
+        return None
+    return filtered["run_id"][0].as_py()
 
 
 def get_run_rows(table_name: str, run_id: str) -> List[Dict]:
     """Fetch all rows for a specific run_id from inventory table."""
+    from pyiceberg.expressions import EqualTo
     catalog = _build_catalog()
     table = catalog.load_table(("vsl", table_name))
-    arrow = table.scan().to_arrow()
+    arrow = table.scan(row_filter=EqualTo("run_id", run_id)).to_arrow()
     if arrow.num_rows == 0:
         return []
-    return [row for row in arrow.to_pylist() if row.get("run_id") == run_id]
+    return arrow.to_pylist()
