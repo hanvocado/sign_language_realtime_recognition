@@ -115,8 +115,10 @@ def cmd_append(args: argparse.Namespace) -> None:
     if "inserted_at" not in df.columns:
         df = df.withColumn("inserted_at", current_timestamp())
 
+    df.cache()
+    row_count = df.count()
     df.writeTo(f"vsl.{args.table}").append()
-    print(f"APPENDED {df.count()} rows to vsl.{args.table}")
+    print(f"APPENDED {row_count} rows to vsl.{args.table}")
     spark.stop()
 
 
