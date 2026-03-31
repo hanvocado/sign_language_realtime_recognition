@@ -10,6 +10,10 @@ best_epoch*.pth
 
 *analysis*.md
 
+tuning_results/
+eval_results/
+models/checkpoints/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
