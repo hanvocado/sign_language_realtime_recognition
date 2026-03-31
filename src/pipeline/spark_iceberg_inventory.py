@@ -4,6 +4,7 @@ Commands:
 - append: append inventory rows from a JSON file
 - latest-run: print latest run_id in a table
 - rows-by-run: export rows for a run_id to JSON file
+- checkpoint: export processed checkpoint (object_path, etag) to JSON file
 """
 
 from __future__ import annotations
@@ -27,7 +28,7 @@ def build_spark(app_name: str, master: Optional[str] = None) -> SparkSession:
     minio_endpoint = os.environ.get("MLFLOW_S3_ENDPOINT_URL", "http://minio:9000")
     minio_access = os.environ.get("AWS_ACCESS_KEY_ID", "minioadmin")
     minio_secret = os.environ.get("AWS_SECRET_ACCESS_KEY", "minioadmin")
-    warehouse = os.environ.get("ICEBERG_WAREHOUSE", "s3a://data/iceberg")
+    warehouse = os.environ.get("ICEBERG_WAREHOUSE", "s3a://data/lakehouse/system/iceberg")
     if warehouse.startswith("s3://"):
         warehouse = warehouse.replace("s3://", "s3a://", 1)
     namespace = os.environ.get("ICEBERG_NAMESPACE", "sign_language")
@@ -168,9 +169,31 @@ def cmd_rows_by_run(args: argparse.Namespace) -> None:
     spark.stop()
 
 
+def cmd_checkpoint(args: argparse.Namespace) -> None:
+    namespace = os.environ.get("ICEBERG_NAMESPACE", "sign_language")
+    spark = build_spark("checkpoint-iceberg", args.master)
+    ensure_inventory_table(spark, args.table)
+
+    rows = (
+        spark.table(f"{namespace}.{args.table}")
+        .filter("file_type LIKE 'bronze_%'")
+        .select("object_path", "etag")
+        .distinct()
+        .toJSON()
+        .collect()
+    )
+
+    parsed = [json.loads(r) for r in rows]
+    with open(args.output_file, "w", encoding="utf-8") as f:
+        json.dump(parsed, f, ensure_ascii=False, indent=2)
+
+    print(f"EXPORTED CHECKPOINT {len(parsed)} rows to {args.output_file}")
+    spark.stop()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Spark Iceberg inventory jobs")
-    parser.add_argument("command", choices=["append", "latest-run", "rows-by-run"])
+    parser.add_argument("command", choices=["append", "latest-run", "rows-by-run", "checkpoint"])
     parser.add_argument("--master", default=os.environ.get("SPARK_MASTER_URL", "spark://spark-master:7077"))
     parser.add_argument("--table", required=True)
     parser.add_argument("--rows-file")
@@ -189,6 +212,10 @@ def main() -> None:
         if not args.run_id or not args.output_file:
             raise ValueError("--run-id and --output-file are required for rows-by-run")
         cmd_rows_by_run(args)
+    elif args.command == "checkpoint":
+        if not args.output_file:
+            raise ValueError("--output-file is required for checkpoint")
+        cmd_checkpoint(args)
 
 
 if __name__ == "__main__":

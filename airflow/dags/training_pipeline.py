@@ -37,6 +37,8 @@ AWS_ACCESS_KEY = os.environ.get("AWS_ACCESS_KEY_ID", "minioadmin")
 AWS_SECRET_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY", "minioadmin")
 MINIO_S3_ENDPOINT = os.environ.get("MLFLOW_S3_ENDPOINT_URL", "http://minio:9000")
 PROJECT_ROOT = os.environ.get("PYTHONPATH", "/opt/airflow/project")
+DATASET_VERSION = os.environ.get("DATASET_VERSION", "v1").strip("/")
+ICEBERG_LANDMARKS_TABLE = os.environ.get("ICEBERG_GOLD_TRAINING_TABLE", "gold_training_landmarks_inventory")
 
 MINIO_ENDPOINT = os.environ.get("MINIO_ENDPOINT", "minio:9000")
 if MINIO_ENDPOINT.startswith("http://"):
@@ -111,7 +113,7 @@ def read_landmarks(**context):
                 spark_job,
                 "rows-by-run",
                 "--table",
-                "landmarks_inventory",
+                ICEBERG_LANDMARKS_TABLE,
                 "--run-id",
                 run_id,
                 "--output-file",
@@ -134,7 +136,7 @@ def read_landmarks(**context):
                 spark_job,
                 "latest-run",
                 "--table",
-                "landmarks_inventory",
+                ICEBERG_LANDMARKS_TABLE,
             ]
             latest_result = subprocess.run(latest_cmd, capture_output=True, text=True, cwd=PROJECT_ROOT)
             latest_run_id = latest_result.stdout.strip() if latest_result.returncode == 0 else None
@@ -150,7 +152,7 @@ def read_landmarks(**context):
                     spark_job,
                     "rows-by-run",
                     "--table",
-                    "landmarks_inventory",
+                    ICEBERG_LANDMARKS_TABLE,
                     "--run-id",
                     run_id,
                     "--output-file",
@@ -173,7 +175,7 @@ def read_landmarks(**context):
             manifest = json.load(f)
         run_id = run_id or manifest.get("run_id")
         minio_bucket = manifest.get("minio_bucket", minio_bucket)
-        minio_prefix = manifest.get("minio_prefix")
+        minio_prefix = manifest.get("gold_minio_prefix") or manifest.get("minio_prefix")
 
     if not minio_prefix and not iceberg_rows:
         raise AirflowException("Unable to resolve landmarks prefix from DAG config or manifest")
@@ -402,7 +404,16 @@ def log_to_mlflow(**context):
             "normalization_config": json.dumps(normalization_config, ensure_ascii=False),
             "dataset_bucket": minio_bucket,
             "dataset_prefix": minio_prefix,
+            "dataset_version": DATASET_VERSION,
+            "iceberg_gold_training_table": ICEBERG_LANDMARKS_TABLE,
         })
+        mlflow.set_tags(
+            {
+                "medallion_layer": "gold",
+                "dataset_version": DATASET_VERSION,
+                "data_source": "gold_training_landmarks",
+            }
+        )
         
         # Log metrics
         for metric_name, metric_value in eval_results.items():
@@ -410,12 +421,12 @@ def log_to_mlflow(**context):
                 mlflow.log_metric(metric_name, metric_value)
         
         # Log model artifact
-        mlflow.log_artifact(model_path, artifact_path="models")
+        mlflow.log_artifact(model_path, artifact_path=f"gold/models/{DATASET_VERSION}")
         
         # Log evaluation results
         eval_file = f"{run_dir}/evaluation_results.json"
         if os.path.exists(eval_file):
-            mlflow.log_artifact(eval_file, artifact_path="evaluation")
+            mlflow.log_artifact(eval_file, artifact_path=f"gold/evaluation/{DATASET_VERSION}")
         
         mlflow_run_id = run.info.run_id
     

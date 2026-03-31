@@ -85,7 +85,7 @@ services:
       --backend-store-uri postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/mlflow
       --host 0.0.0.0
       --serve-artifacts
-      --artifacts-destination s3://mlflow
+      --artifacts-destination s3://mlflow/lakehouse/gold/mlflow
     depends_on:
       postgres:
         condition: service_healthy
@@ -168,13 +168,24 @@ services:
       ICEBERG_POSTGRES_HOST: postgres
       ICEBERG_POSTGRES_PORT: 5432
       ICEBERG_POSTGRES_DB: iceberg
-      ICEBERG_WAREHOUSE: s3a://data/iceberg
+      ICEBERG_WAREHOUSE: s3a://data/lakehouse/system/iceberg
       SPARK_MASTER_URL: spark://spark-master:7077
       SPARK_ICEBERG_PACKAGES: org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.5.2,org.postgresql:postgresql:42.7.3,org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262
       # MinIO
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin
+      DATASET_VERSION: v1
+      MINIO_BRONZE_ROOT_PREFIX: lakehouse/bronze
+      MINIO_UPLOAD_PREFIX: lakehouse/bronze/user_upload
+      MINIO_BRONZE_LOCAL_PREFIX: lakehouse/bronze/local_dataset
+      MINIO_LOCAL_DATASET_PREFIX: lakehouse/silver/preprocessed/v1/raw_videos
+      MINIO_LANDMARKS_PREFIX: lakehouse/silver/preprocessed/v1/landmarks
+      MINIO_GOLD_TRAINING_PREFIX: lakehouse/gold/training_dataset
+      ICEBERG_BRONZE_TABLE: bronze_user_upload_inventory
+      ICEBERG_SILVER_RAW_TABLE: silver_raw_inventory
+      ICEBERG_SILVER_LANDMARKS_TABLE: silver_landmarks_inventory
+      ICEBERG_GOLD_TRAINING_TABLE: gold_training_landmarks_inventory
       PYTHONPATH: /opt/airflow/project
     volumes:
       - ./airflow/dags:/opt/airflow/dags
@@ -216,13 +227,24 @@ services:
       ICEBERG_POSTGRES_HOST: postgres
       ICEBERG_POSTGRES_PORT: 5432
       ICEBERG_POSTGRES_DB: iceberg
-      ICEBERG_WAREHOUSE: s3a://data/iceberg
+      ICEBERG_WAREHOUSE: s3a://data/lakehouse/system/iceberg
       SPARK_MASTER_URL: spark://spark-master:7077
       SPARK_ICEBERG_PACKAGES: org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.5.2,org.postgresql:postgresql:42.7.3,org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262
       # MinIO
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin
+      DATASET_VERSION: v1
+      MINIO_BRONZE_ROOT_PREFIX: lakehouse/bronze
+      MINIO_UPLOAD_PREFIX: lakehouse/bronze/user_upload
+      MINIO_BRONZE_LOCAL_PREFIX: lakehouse/bronze/local_dataset
+      MINIO_LOCAL_DATASET_PREFIX: lakehouse/silver/preprocessed/v1/raw_videos
+      MINIO_LANDMARKS_PREFIX: lakehouse/silver/preprocessed/v1/landmarks
+      MINIO_GOLD_TRAINING_PREFIX: lakehouse/gold/training_dataset
+      ICEBERG_BRONZE_TABLE: bronze_user_upload_inventory
+      ICEBERG_SILVER_RAW_TABLE: silver_raw_inventory
+      ICEBERG_SILVER_LANDMARKS_TABLE: silver_landmarks_inventory
+      ICEBERG_GOLD_TRAINING_TABLE: gold_training_landmarks_inventory
       PYTHONPATH: /opt/airflow/project
     volumes:
       - ./airflow/dags:/opt/airflow/dags
@@ -253,6 +275,7 @@ services:
     environment:
       PYTHONPATH: /app
       MINIO_ENDPOINT: http://minio:9000
+      MINIO_UPLOAD_PREFIX: lakehouse/bronze/user_upload
       MLFLOW_TRACKING_URI: http://mlflow:5000
     volumes:
       - ./src:/app/src

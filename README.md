@@ -43,21 +43,25 @@ sign-language-recognition/
   ```
 
 4. Convert tất cả video sang npy:
+
    ```bash
    python -m src.preprocess.video2npy --input_dir data/wlvsl/raw --output_dir data/wlvsl/npy
    ```
 
 5. Split dataset into train/val/test:
+
    ```bash
    python -m src.preprocess.split_dataset --data_dir data/wlvsl/npy --output_dir data/wlvsl/splits
    ```
 
 6. Huấn luyện và đánh giá:
+
    ```bash
    python -m src.model.train --data_dir data/wlvsl/npy --source npy --ckpt_dir models/checkpoints/vsl_v1
    ```
 
 7. Realtime inference:
+
    ```bash
    python -m src.infer_realtime --ckpt models/checkpoints/vsl_v1/best.pth --label_map models/checkpoints/vsl_v1/label_map.json
    ```
@@ -67,7 +71,7 @@ sign-language-recognition/
    Ứng dụng web real-time nhận diện ngôn ngữ kí hiệu thông qua webcam.
 
    **Tính năng:**
-   - Real-time video capture từ webcam 
+   - Real-time video capture từ webcam
    - Phát hiện chuyển động (Motion Detection FSM)
    - Nhận diện ký hiệu tự động
    - Hiển thị kết quả với độ tin cậy (confidence)
@@ -76,11 +80,13 @@ sign-language-recognition/
    **Cách chạy:**
 
    a. Cài đặt dependencies cho webapp (nếu chưa có):
+
    ```bash
    pip install -r requirements.txt
    ```
 
    b. Khởi động Flask server:
+
    ```bash
    python .\src\webapp\server.py
    ```
@@ -98,6 +104,7 @@ sign-language-recognition/
    - `STILL_FRAMES_REQUIRED`: Số frame không chuyển động để kết thúc ghi nhận (mặc định: 8)
 
    **Cấu trúc Webapp:**
+
    ```
    webapp/
    ├── server.py              # Flask server chính
@@ -115,3 +122,58 @@ sign-language-recognition/
 - Tất cả file `.npy` được lưu dạng `(seq_len, 225)`.
 - Coordinate normalization sử dụng wrist joints làm reference point theo công thức: L̂_t = (L_t - L_ref) / ||L_max - L_min||
 - `train.py` lưu `label_map.json` (list labels theo thứ tự index) trong folder checkpoint để inference tải lại mapping.
+
+## Cấu trúc lakehouse medallion hiện tại
+
+Bucket chính: `data`
+
+```
+data/
+└── lakehouse/
+      ├── system/
+      │   └── iceberg/
+      ├── bronze/
+   │   ├── user_upload/
+      │   │   └── <yyyymm>/<yyyymmdd>/<label>/<timestamp>_<filename>.mp4
+   │   └── local_dataset/
+      │       └── <yyyymm>/<yyyymmdd>/<label>/<timestamp>_<filename>.mp4
+      ├── silver/
+   │   └── preprocessed/
+      │       └── <dataset_version>/
+      │           ├── raw_videos/<run_month>/<run_stamp>/<label>/<segment>.mp4
+      │           └── landmarks/<run_month>/<run_stamp>/<label>/<segment>.npy
+      └── gold/
+         └── training_dataset/<gold_version>/...
+
+   mlflow/
+   └── lakehouse/gold/mlflow/...   (artifact root nằm trong bucket `mlflow`)
+```
+
+Ý nghĩa:
+
+- Bronze (`lakehouse/bronze`): dữ liệu thô gồm cả `user_upload` và `local_dataset`.
+  Partition theo `yyyymm/yyyymmdd/label` để cân bằng giữa hiệu năng và quản lý dữ liệu.
+- Silver (`lakehouse/silver/preprocessed/<dataset_version>`): dữ liệu đã preprocess + feature extraction, có version để tái lập pipeline.
+- Gold (`lakehouse/gold/training_dataset/<gold_version>`): snapshot dữ liệu huấn luyện tổng hợp theo label, chỉ tạo version mới khi có data mới.
+- System (`lakehouse/system/iceberg`): metadata + manifests của Iceberg tables, tách riêng khỏi Medallion business layers để dễ vận hành.
+- `dataset_version` (vd `v1`, `v2`): chỉ áp dụng cho Silver/Gold khi thay đổi logic preprocess/feature schema.
+
+Versioning hiện tại:
+
+- Iceberg tables theo medallion:
+  - `bronze_user_upload_inventory`
+  - `silver_raw_inventory`
+  - `silver_landmarks_inventory`
+  - `gold_training_landmarks_inventory`
+- Gold dataset version (`v0001`, `v0002`, ...): tăng khi preprocessing tạo thêm landmarks mới.
+- MLflow log kèm `dataset_version` và artifacts model/eval nằm dưới nhánh `gold/.../<dataset_version>`.
+
+Luồng xử lý:
+
+1. Mỗi lần chạy `preprocessing_pipeline`, local raw dataset được ingest vào `bronze/local_dataset/<yyyymm>/<yyyymmdd>/<label>/...` (file đã ingest thì skip).
+2. Webapp upload vào `bronze/user_upload/<yyyymm>/<yyyymmdd>/<label>/...`.
+3. DAG sync toàn bộ Bronze và chỉ lấy object chưa xử lý (skip theo object_name + etag).
+4. DAG preprocess -> lưu Silver raw videos.
+5. DAG extract landmarks -> lưu Silver landmarks.
+6. Nếu có landmarks mới, DAG publish Gold training snapshot mới theo label (`gold/training_dataset/<gold_version>/landmarks/<label>/...`).
+7. Training pipeline đọc bản Gold mới nhất, train model và log lên MLflow.
