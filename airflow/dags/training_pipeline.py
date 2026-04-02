@@ -53,10 +53,8 @@ minio_client = Minio(
     secure=False,
 )
 
-# Set MLflow tracking URI
-mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+# MLflow tracking URI (set lazily inside tasks to avoid import-time network calls)
 MLFLOW_EXPERIMENT = os.environ.get("MLFLOW_EXPERIMENT", "sign_language_training")
-mlflow.set_experiment(MLFLOW_EXPERIMENT)
 
 # Default Airflow arguments
 default_args = {
@@ -385,7 +383,11 @@ def evaluate_model(**context):
 def log_to_mlflow(**context):
     """Log model and metrics to MLflow"""
     import subprocess
-    
+
+    # Configure MLflow inside the task to avoid import-time network calls
+    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+    mlflow.set_experiment(MLFLOW_EXPERIMENT)
+
     run_dir = context["task_instance"].xcom_pull(task_ids="prepare_training_run", key="run_dir")
     model_path = context["task_instance"].xcom_pull(task_ids="train_model", key="model_path")
     eval_results = context["task_instance"].xcom_pull(task_ids="evaluate_model", key="eval_results") or {}
@@ -466,7 +468,7 @@ def register_model(**context):
 
         model_version = client.create_model_version(
             name=model_name,
-            source=f"runs:/{mlflow_run_id}/models",
+            source=f"runs:/{mlflow_run_id}/gold/models/{DATASET_VERSION}",
             run_id=mlflow_run_id,
         )
         
@@ -499,9 +501,13 @@ def update_production_manifest(**context):
     # Convert absolute paths to paths relative to PROJECT_ROOT so the
     # manifest is portable across containers (Airflow vs. webapp).
     project_root = Path(PROJECT_ROOT)
+    label_map_path = Path(run_dir) / "label_map.json"
+    if not label_map_path.exists():
+        print(f"⚠️ label_map.json not found in run_dir: {label_map_path}")
     try:
         rel_model_path = Path(model_path).relative_to(project_root)
         rel_run_dir = Path(run_dir).relative_to(project_root)
+        rel_label_map_path = label_map_path.relative_to(project_root)
     except ValueError:
         # Paths are not under PROJECT_ROOT; store as-is (non-portable across containers)
         import warnings
@@ -512,9 +518,11 @@ def update_production_manifest(**context):
         )
         rel_model_path = model_path
         rel_run_dir = run_dir
+        rel_label_map_path = str(label_map_path)
 
     manifest = {
         "model_path": str(rel_model_path),
+        "label_map_path": str(rel_label_map_path),
         "run_dir": str(rel_run_dir),
         "mlflow_run_id": mlflow_run_id,
         "mlflow_tracking_uri": MLFLOW_TRACKING_URI,

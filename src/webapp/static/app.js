@@ -46,6 +46,7 @@ let mediaRecorder = null;
 let recordingChunks = [];
 let recordedBlob = null;
 let recordedAccepted = false;
+let previewObjectURL = null;
 
 
 function toggleUploadModal(show) {
@@ -250,6 +251,10 @@ function clearRecordingState(resetPreview = false) {
 
     const preview = document.getElementById('recordPreview');
     if (preview && resetPreview) {
+        if (previewObjectURL) {
+            URL.revokeObjectURL(previewObjectURL);
+            previewObjectURL = null;
+        }
         preview.removeAttribute('src');
         preview.srcObject = null;
         preview.controls = false;
@@ -321,7 +326,11 @@ function startRecording() {
         mediaRecorder.onstop = () => {
             recordedBlob = new Blob(recordingChunks, { type: 'video/webm' });
             preview.srcObject = null;
-            preview.src = URL.createObjectURL(recordedBlob);
+            if (previewObjectURL) {
+                URL.revokeObjectURL(previewObjectURL);
+            }
+            previewObjectURL = URL.createObjectURL(recordedBlob);
+            preview.src = previewObjectURL;
             preview.controls = true;
             preview.muted = false;
             preview.style.transform = 'scaleX(1)';
