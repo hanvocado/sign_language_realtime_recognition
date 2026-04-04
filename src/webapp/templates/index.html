@@ -30,7 +30,10 @@
                 Studying Vietnamese Sign Language (VSL) promotes better awareness and sensitivity to the deaf and hard of hearing community. 
                 Our intelligent system recognizes and translates sign language in real-time, bridging communication gaps with advanced AI technology.
             </p>
-            <button class="landing-btn" id="startBtn">Start Recognition</button>
+            <div class="landing-actions">
+                <button class="landing-btn upload-trigger-btn" id="openUploadBtn">Upload Videos</button>
+                <button class="landing-btn" id="startBtn">Start Recognition</button>
+            </div>
         </div>
 
         <!-- Decorative circles -->
@@ -85,6 +88,73 @@
             </div>
         </div>
     </section>
+
+    <!-- Upload Modal -->
+    <div class="upload-modal hidden" id="uploadModal" aria-hidden="true">
+        <div class="upload-modal-backdrop" id="uploadModalBackdrop"></div>
+        <div class="upload-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="uploadModalTitle">
+            <div class="upload-modal-header">
+                <h3 id="uploadModalTitle">Upload Videos</h3>
+                <button class="upload-modal-close" id="closeUploadBtn" aria-label="Close">&times;</button>
+            </div>
+            <p class="upload-hint">Help improve sign language recognition by contributing labeled videos from your device or recording directly in the browser.</p>
+
+            <div class="contribution-methods">
+                <div class="upload-field upload-files">
+                    <label for="videoFiles">Video Files (from your device)</label>
+                    <input id="videoFiles" type="file" accept=".mp4,.avi,.mov,.mkv,.webm" multiple>
+                </div>
+
+                <div class="method-switch" id="methodSwitch">
+                    <button type="button" class="method-btn" id="toggleRecordBtn">Record Now</button>
+                </div>
+            </div>
+
+            <div class="upload-grid">
+                <div class="upload-field label-select-wrap">
+                    <label for="labelDropdownTrigger">Choose Existing Sign</label>
+                    <div class="label-selector" id="labelSelector">
+                        <button type="button" class="label-dropdown-trigger" id="labelDropdownTrigger" aria-expanded="false">
+                            <span id="selectedLabelText">Select a sign</span>
+                            <span class="dropdown-icon">&#9662;</span>
+                        </button>
+                        <div class="label-dropdown-panel hidden" id="labelDropdownPanel">
+                            <input id="labelSearchInput" type="text" placeholder="Search sign...">
+                            <div class="label-options-list" id="labelOptionsList"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="upload-field new-sign-wrap hidden" id="newSignWrap">
+                <label for="newLabel">Create New Sign</label>
+                <div class="new-sign-row">
+                    <input id="newLabel" type="text" placeholder="e.g. xin chao">
+                    <button type="button" class="upload-btn secondary" id="backToListBtn">Back To List</button>
+                </div>
+            </div>
+
+            <div class="record-panel hidden" id="recordPanel">
+                <div class="record-layout">
+                    <div class="record-preview-wrap">
+                        <video id="recordPreview" class="record-preview" autoplay muted playsinline></video>
+                    </div>
+                    <div class="record-actions">
+                        <button type="button" class="upload-btn" id="startRecordBtn">Start Recording</button>
+                        <button type="button" class="upload-btn secondary" id="stopRecordBtn" disabled>Stop</button>
+                        <button type="button" class="upload-btn secondary" id="retryRecordBtn" disabled>Re-record</button>
+                        <button type="button" class="upload-btn accept" id="acceptRecordBtn" disabled>Accept Clip</button>
+                    </div>
+                </div>
+                <div class="record-status" id="recordStatus">Ready to record.</div>
+            </div>
+
+            <div class="upload-modal-actions">
+                <button class="upload-btn" id="uploadBtn" type="button">Upload Videos</button>
+                <span class="upload-result" id="uploadResult">No upload yet.</span>
+            </div>
+        </div>
+    </div>
 
     <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
     <script src="{{ url_for('static', filename='app.js') }}"></script>

@@ -1,0 +1,25 @@
+# VCS and local environments
+.git
+.gitignore
+venv/
+
+# Python caches
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Runtime artifacts and large datasets (mounted at runtime)
+data/
+models/
+logs/
+
+# IDE and notebook artifacts
+.vscode/
+.idea/
+.ipynb_checkpoints/
+
+# OS files
+.DS_Store
+Thumbs.db

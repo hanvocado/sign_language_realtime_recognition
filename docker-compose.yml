@@ -1,0 +1,290 @@
+services:
+  # PostgreSQL cho Airflow metadata
+  postgres-airflow:
+    image: postgres:14
+    container_name: postgres-airflow
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-airflow-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # MinIO cho data storage
+  postgres:
+    image: postgres:14
+    container_name: postgres
+    restart: always
+    ports:
+      - "5433:5432"
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    restart: always
+    image: quay.io/minio/minio
+    container_name: minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ACCESS_KEY}
+      - MINIO_ROOT_PASSWORD=${MINIO_SECRET_ACCESS_KEY}
+      - MINIO_STORAGE_USE_HTTPS=false
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio-setup:
+    image: quay.io/minio/mc
+    depends_on:
+      minio:
+        condition: service_healthy
+    volumes:
+      - ./docker/minio/create-bucket.sh:/create-bucket.sh
+    entrypoint: /bin/sh
+    command: -c "chmod +x /create-bucket.sh && /create-bucket.sh"
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ACCESS_KEY}
+      - MINIO_ROOT_PASSWORD=${MINIO_SECRET_ACCESS_KEY}
+
+  mlflow:
+    restart: always
+    build: ./docker/mlflow
+    image: mlflow_server
+    container_name: mlflow_server
+    ports:
+      - "5000:5000"
+    environment:
+      - AWS_ACCESS_KEY_ID=${MINIO_ACCESS_KEY}
+      - AWS_SECRET_ACCESS_KEY=${MINIO_SECRET_ACCESS_KEY}
+      - MLFLOW_S3_ENDPOINT_URL=${MLFLOW_S3_ENDPOINT}
+      - MLFLOW_S3_IGNORE_TLS=true
+    command: >
+      mlflow server
+      --backend-store-uri postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/mlflow
+      --host 0.0.0.0
+      --serve-artifacts
+      --artifacts-destination s3://mlflow/lakehouse/gold/mlflow
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio-setup:
+        condition: service_completed_successfully
+
+  spark-master:
+    image: apache/spark:3.5.1
+    container_name: spark-master
+    command: >
+      /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
+      --host spark-master
+      --port 7077
+      --webui-port 8080
+    ports:
+      - "7077:7077"
+      - "8081:8080"
+    volumes:
+      - ./data:/opt/airflow/project/data
+
+  spark-worker:
+    image: apache/spark:3.5.1
+    container_name: spark-worker
+    command: >
+      /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker
+      --cores 2
+      --memory 2g
+      spark://spark-master:7077
+    depends_on:
+      - spark-master
+    volumes:
+      - ./data:/opt/airflow/project/data
+
+  airflow-init:
+    build:
+      context: .
+      dockerfile: docker/airflow/Dockerfile
+    container_name: airflow-init
+    command: >
+      bash -c "airflow db migrate &&
+      airflow users create --username admin --password admin
+      --firstname Airflow --lastname Admin --role Admin --email admin@example.com || true"
+    environment:
+      AIRFLOW__CORE__SQL_ALCHEMY_CONN: "postgresql+psycopg2://airflow:airflow@postgres-airflow:5432/airflow"
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW__WEBSERVER__SECRET_KEY:-airflow-shared-dev-secret-key}
+      PYTHONPATH: /opt/airflow/project
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./src:/opt/airflow/project/src
+      - ./data:/opt/airflow/project/data
+      - ./models:/opt/airflow/project/models
+      - ./logs:/opt/airflow/project/logs
+    depends_on:
+      postgres-airflow:
+        condition: service_healthy
+
+  # Airflow webserver
+  airflow-webserver:
+    build:
+      context: .
+      dockerfile: docker/airflow/Dockerfile
+    container_name: airflow-webserver
+    command: airflow webserver
+    ports:
+      - "8080:8080"
+    environment:
+      AIRFLOW__CORE__SQL_ALCHEMY_CONN: "postgresql+psycopg2://airflow:airflow@postgres-airflow:5432/airflow"
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW__WEBSERVER__SECRET_KEY:-airflow-shared-dev-secret-key}
+      # MLflow
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      ICEBERG_POSTGRES_HOST: postgres
+      ICEBERG_POSTGRES_PORT: 5432
+      ICEBERG_POSTGRES_DB: iceberg
+      ICEBERG_WAREHOUSE: s3a://data/lakehouse/system/iceberg
+      SPARK_MASTER_URL: spark://spark-master:7077
+      SPARK_ICEBERG_PACKAGES: org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.5.2,org.postgresql:postgresql:42.7.3,org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262
+      # MinIO
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      DATASET_VERSION: v1
+      MINIO_BRONZE_ROOT_PREFIX: lakehouse/bronze
+      MINIO_UPLOAD_PREFIX: lakehouse/bronze/user_upload
+      MINIO_BRONZE_LOCAL_PREFIX: lakehouse/bronze/local_dataset
+      MINIO_LOCAL_DATASET_PREFIX: lakehouse/silver/preprocessed/v1/raw_videos
+      MINIO_LANDMARKS_PREFIX: lakehouse/silver/preprocessed/v1/landmarks
+      MINIO_GOLD_TRAINING_PREFIX: lakehouse/gold/training_dataset
+      ICEBERG_BRONZE_TABLE: bronze_user_upload_inventory
+      ICEBERG_SILVER_RAW_TABLE: silver_raw_inventory
+      ICEBERG_SILVER_LANDMARKS_TABLE: silver_landmarks_inventory
+      ICEBERG_GOLD_TRAINING_TABLE: gold_training_landmarks_inventory
+      PYTHONPATH: /opt/airflow/project
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./src:/opt/airflow/project/src
+      - ./data:/opt/airflow/project/data
+      - ./models:/opt/airflow/project/models
+      - ./logs:/opt/airflow/project/logs
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+      postgres-airflow:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      mlflow:
+        condition: service_started
+      spark-master:
+        condition: service_started
+
+  # Airflow scheduler
+  airflow-scheduler:
+    build:
+      context: .
+      dockerfile: docker/airflow/Dockerfile
+    container_name: airflow-scheduler
+    command: airflow scheduler
+    environment:
+      AIRFLOW__CORE__SQL_ALCHEMY_CONN: "postgresql+psycopg2://airflow:airflow@postgres-airflow:5432/airflow"
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW__WEBSERVER__SECRET_KEY:-airflow-shared-dev-secret-key}
+      # MLflow
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      ICEBERG_POSTGRES_HOST: postgres
+      ICEBERG_POSTGRES_PORT: 5432
+      ICEBERG_POSTGRES_DB: iceberg
+      ICEBERG_WAREHOUSE: s3a://data/lakehouse/system/iceberg
+      SPARK_MASTER_URL: spark://spark-master:7077
+      SPARK_ICEBERG_PACKAGES: org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.5.2,org.postgresql:postgresql:42.7.3,org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262
+      # MinIO
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      DATASET_VERSION: v1
+      MINIO_BRONZE_ROOT_PREFIX: lakehouse/bronze
+      MINIO_UPLOAD_PREFIX: lakehouse/bronze/user_upload
+      MINIO_BRONZE_LOCAL_PREFIX: lakehouse/bronze/local_dataset
+      MINIO_LOCAL_DATASET_PREFIX: lakehouse/silver/preprocessed/v1/raw_videos
+      MINIO_LANDMARKS_PREFIX: lakehouse/silver/preprocessed/v1/landmarks
+      MINIO_GOLD_TRAINING_PREFIX: lakehouse/gold/training_dataset
+      ICEBERG_BRONZE_TABLE: bronze_user_upload_inventory
+      ICEBERG_SILVER_RAW_TABLE: silver_raw_inventory
+      ICEBERG_SILVER_LANDMARKS_TABLE: silver_landmarks_inventory
+      ICEBERG_GOLD_TRAINING_TABLE: gold_training_landmarks_inventory
+      PYTHONPATH: /opt/airflow/project
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./src:/opt/airflow/project/src
+      - ./data:/opt/airflow/project/data
+      - ./models:/opt/airflow/project/models
+      - ./logs:/opt/airflow/project/logs
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+      postgres-airflow:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      mlflow:
+        condition: service_started
+      spark-master:
+        condition: service_started
+
+  # Flask webapp cho inference
+  webapp:
+    build:
+      context: .
+      dockerfile: docker/webapp/Dockerfile
+    container_name: webapp
+    ports:
+      - "5001:5000"
+    environment:
+      PYTHONPATH: /app
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_UPLOAD_PREFIX: lakehouse/bronze/user_upload
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+    volumes:
+      - ./src:/app/src
+      - ./models:/app/models
+    depends_on:
+      - minio
+      - mlflow
+
+volumes:
+  postgres-airflow-data:
+  postgres_data:
+  minio_data:

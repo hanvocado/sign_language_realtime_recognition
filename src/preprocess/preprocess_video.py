@@ -211,7 +211,7 @@ def batch_preprocess(input_dir, output_dir, fps=30, width=1280, height=720,
         Path(out_label_dir).mkdir(parents=True, exist_ok=True)
         
         for f in sorted(os.listdir(in_label_dir)):
-            if f.lower().endswith((".mp4", ".avi", ".mov", ".mkv")):
+            if f.lower().endswith((".mp4", ".avi", ".mov", ".mkv", ".webm")):
                 in_path = os.path.join(in_label_dir, f)
                 out_path = os.path.join(out_label_dir, f)
                 preprocess_video(in_path, out_path, fps=fps, width=width, height=height,

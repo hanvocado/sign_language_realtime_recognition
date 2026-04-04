@@ -16,6 +16,7 @@ import base64
 import json
 import threading
 import time
+import re
 import numpy as np
 import torch
 import cv2
@@ -25,8 +26,13 @@ from collections import deque
 import queue
 
 # Flask
-from flask import Flask, render_template
+from flask import Flask, render_template, jsonify, request
 from flask_socketio import SocketIO, emit
+from werkzeug.utils import secure_filename
+
+# MinIO
+from minio import Minio
+from minio.error import S3Error
 
 # MediaPipe
 import mediapipe as mp
@@ -53,6 +59,14 @@ MIN_CONFIDENCE = 0.52  # Slightly higher to filter borderline predictions
 INFERENCE_INTERVAL = 0.15  # Run inference every 150ms
 SMOOTHING_WINDOW = 4  # Voting window size
 MIN_VOTES_FOR_RESULT = 3  # Increased from 2 to 3 - need stronger consensus (75% in window of 4)
+
+# Upload pipeline config
+MINIO_BUCKET = os.environ.get("MINIO_BUCKET", "data")
+MINIO_UPLOAD_PREFIX = os.environ.get(
+    "MINIO_UPLOAD_PREFIX", "lakehouse/bronze/user_upload"
+).strip("/")
+MAX_UPLOAD_FILES = int(os.environ.get("MAX_UPLOAD_FILES", "30"))
+ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".webm"}
 
 # ===================================================================
 # FLASK APP
@@ -83,6 +97,7 @@ logger = logging.getLogger(__name__)
 
 model = None
 label_list = None
+minio_client = None
 
 # MediaPipe (single instance in dedicated thread)
 mp_holistic = mp.solutions.holistic
@@ -105,8 +120,88 @@ latest_prediction = {
 }
 
 last_emitted_label = None  
+last_emit_time = 0.0
 DUPLICATE_PREVENTION_TIMEOUT = 0.5  
 inference_blocked_until = 0  
+
+
+def _normalize_minio_endpoint(endpoint: str) -> str:
+    if endpoint.startswith("http://"):
+        return endpoint.replace("http://", "", 1)
+    if endpoint.startswith("https://"):
+        return endpoint.replace("https://", "", 1)
+    return endpoint
+
+
+def _sanitize_label(label: str) -> str:
+    value = (label or "").strip()
+    value = re.sub(r"[/\\]+", "_", value)
+    value = re.sub(r"\s+", " ", value)
+    return value
+
+
+def _label_folder(label: str) -> str:
+    return _sanitize_label(label).replace(" ", "_")
+
+
+def _allowed_video(filename: str) -> bool:
+    return Path(filename).suffix.lower() in ALLOWED_VIDEO_EXTENSIONS
+
+
+def init_minio_client():
+    global minio_client
+
+    raw_endpoint = os.environ.get("MINIO_ENDPOINT", "minio:9000")
+    endpoint = _normalize_minio_endpoint(raw_endpoint)
+    access_key = os.environ.get("MINIO_ACCESS_KEY") or os.environ.get("AWS_ACCESS_KEY_ID", "minioadmin")
+    secret_key = os.environ.get("MINIO_SECRET_KEY") or os.environ.get("AWS_SECRET_ACCESS_KEY", "minioadmin")
+
+    secure_env = os.environ.get("MINIO_SECURE")
+    if secure_env is not None:
+        secure = secure_env.strip().lower() in ("1", "true", "yes", "on")
+    else:
+        secure = raw_endpoint.startswith("https://")
+
+    minio_client = Minio(
+        endpoint,
+        access_key=access_key,
+        secret_key=secret_key,
+        secure=secure,
+    )
+
+    if not minio_client.bucket_exists(MINIO_BUCKET):
+        minio_client.make_bucket(MINIO_BUCKET)
+
+    logger.info(
+        f"✅ MinIO ready (bucket={MINIO_BUCKET}, prefix={MINIO_UPLOAD_PREFIX}, endpoint={endpoint}, secure={secure})"
+    )
+
+
+def list_available_labels():
+    labels = set(label_list or [])
+
+    if minio_client is not None:
+        try:
+            prefix = f"{MINIO_UPLOAD_PREFIX}/"
+            for obj in minio_client.list_objects(MINIO_BUCKET, prefix=prefix, recursive=True):
+                rel = obj.object_name[len(prefix):]
+                parts = rel.split("/")
+                # Preferred layout: <yyyymm>/<yyyymmdd>/<label>/<file>
+                if len(parts) >= 4 and parts[2]:
+                    labels.add(parts[2].replace("_", " "))
+                # Backward compatible layout with hour: <yyyymm>/<yyyymmdd>/<label>/<hh>/<file>
+                elif len(parts) >= 5 and parts[2]:
+                    labels.add(parts[2].replace("_", " "))
+                # Backward compatible layout: <yyyymm>/<label>/<file>
+                elif len(parts) >= 3 and parts[1]:
+                    labels.add(parts[1].replace("_", " "))
+                # Backward compatibility: <label>/<file>
+                elif len(parts) >= 2 and parts[0]:
+                    labels.add(parts[0].replace("_", " "))
+        except Exception as exc:
+            logger.warning(f"Cannot read labels from MinIO uploads: {exc}")
+
+    return sorted(labels)
 
 # ===================================================================
 # MODEL LOADING
@@ -298,6 +393,103 @@ def run_inference():
 def index():
     return render_template('index.html')
 
+
+@app.route('/api/upload-options', methods=['GET'])
+def upload_options():
+    return jsonify({
+        'labels': list_available_labels(),
+        'max_upload_files': MAX_UPLOAD_FILES,
+        'allowed_extensions': sorted(ALLOWED_VIDEO_EXTENSIONS),
+    })
+
+
+@app.route('/api/upload-videos', methods=['POST'])
+def upload_videos():
+    if minio_client is None:
+        return jsonify({'ok': False, 'message': 'MinIO is not ready'}), 503
+
+    selected_label = request.form.get('selected_label', '')
+    new_label = request.form.get('new_label', '')
+    label = _sanitize_label(new_label if new_label.strip() else selected_label)
+    label_folder = _label_folder(label)
+
+    if not label:
+        return jsonify({'ok': False, 'message': 'Label is required'}), 400
+
+    files = request.files.getlist('videos')
+    if not files:
+        return jsonify({'ok': False, 'message': 'No files were uploaded'}), 400
+
+    if len(files) > MAX_UPLOAD_FILES:
+        return jsonify({
+            'ok': False,
+            'message': f'Too many files. Maximum is {MAX_UPLOAD_FILES} files per request.',
+        }), 400
+
+    uploaded = []
+    skipped = []
+    failed = []
+
+    upload_month = time.strftime("%Y%m")
+    upload_day = time.strftime("%Y%m%d")
+
+    for file_storage in files:
+        original_name = file_storage.filename or ''
+        safe_name = secure_filename(original_name)
+        suffix = Path(safe_name).suffix.lower()
+
+        if not safe_name:
+            failed.append({'file': original_name, 'reason': 'Invalid file name'})
+            continue
+        if not _allowed_video(safe_name):
+            skipped.append({'file': original_name, 'reason': 'Unsupported extension'})
+            continue
+
+        try:
+            stream = file_storage.stream
+            stream.seek(0, 2)
+            size = stream.tell()
+            stream.seek(0)
+            if size == 0:
+                failed.append({'file': original_name, 'reason': 'Empty file'})
+                continue
+
+            object_name = (
+                f"{MINIO_UPLOAD_PREFIX}/{upload_month}/{upload_day}/{label_folder}/"
+                f"{int(time.time() * 1000)}_{safe_name}"
+            )
+
+            minio_client.put_object(
+                MINIO_BUCKET,
+                object_name,
+                data=file_storage.stream,
+                length=size,
+                content_type=file_storage.content_type or 'video/mp4',
+            )
+
+            uploaded.append(
+                {
+                    'file': original_name,
+                    'object_name': object_name,
+                }
+            )
+        except S3Error as exc:
+            failed.append({'file': original_name, 'reason': str(exc)})
+        except Exception as exc:
+            failed.append({'file': original_name, 'reason': str(exc)})
+
+    status_code = 200 if uploaded else 400
+    return jsonify({
+        'ok': bool(uploaded),
+        'label': label,
+        'uploaded_count': len(uploaded),
+        'skipped_count': len(skipped),
+        'failed_count': len(failed),
+        'uploaded': uploaded,
+        'skipped': skipped,
+        'failed': failed,
+    }), status_code
+
 @socketio.on('connect')
 def handle_connect():
     logger.info("✅ Client connected")
@@ -385,10 +577,23 @@ def initialize_app():
     logger.info(f"Device: {DEVICE}")
     logger.info(f"Buffer: {BUFFER_SIZE} | Confidence: {MIN_CONFIDENCE} | Smoothing: {SMOOTHING_WINDOW}")
     
-    # Load model
-    model_path = str(ModelConfig.MODEL_PATH)
-    label_map_path = str(ModelConfig.LABEL_MAP_PATH)
+    # Load model from production manifest or fallback
+    config = ModelConfig.get_active_model_paths()
+    model_path = str(config['model_path'])
+    label_map_path = str(config['label_map_path'])
+    
+    if config['production']:
+        logger.info("✅ Using production model from manifest (production.json)")
+    else:
+        logger.warning("⚠️ Using fallback model path (no production manifest found)")
+    
     model, label_list = load_model_and_weights(model_path, label_map_path)
+
+    # Initialize MinIO upload client for user videos
+    try:
+        init_minio_client()
+    except Exception as exc:
+        logger.warning(f"⚠️ MinIO unavailable at startup (uploads disabled): {exc}")
     
     # Initialize MediaPipe (shared instance)
     holistic = mp_holistic.Holistic(
@@ -402,7 +607,7 @@ def initialize_app():
     worker_thread.start()
     logger.info("✅ MediaPipe worker started")
     
-    logger.info(f"🚀 Server ready at http://127.0.0.1:5000")
+    logger.info("🚀 Server ready at http://0.0.0.0:5000")
 
 # ===================================================================
 # MAIN
@@ -410,4 +615,11 @@ def initialize_app():
 
 if __name__ == '__main__':
     initialize_app()
-    socketio.run(app, host='127.0.0.1', port=5000, debug=False)
+    dev_mode = os.environ.get("FLASK_DEV", "false").lower() == "true"
+    socketio.run(
+        app,
+        host='0.0.0.0',
+        port=5000,
+        debug=dev_mode,
+        allow_unsafe_werkzeug=dev_mode,
+    )

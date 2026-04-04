@@ -7,6 +7,7 @@ models/checkpoints/best_epoch*.pth
 *raw*
 /*data*/
 best_epoch*.pth
+models/checkpoints/run_*/
 
 *analysis*.md
 
