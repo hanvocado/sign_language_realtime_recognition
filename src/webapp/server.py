@@ -151,29 +151,22 @@ def _allowed_video(filename: str) -> bool:
 def init_minio_client():
     global minio_client
 
-    raw_endpoint = os.environ.get("MINIO_ENDPOINT", "minio:9000")
-    endpoint = _normalize_minio_endpoint(raw_endpoint)
+    endpoint = _normalize_minio_endpoint(os.environ.get("MINIO_ENDPOINT", "minio:9000"))
     access_key = os.environ.get("MINIO_ACCESS_KEY") or os.environ.get("AWS_ACCESS_KEY_ID", "minioadmin")
     secret_key = os.environ.get("MINIO_SECRET_KEY") or os.environ.get("AWS_SECRET_ACCESS_KEY", "minioadmin")
-
-    secure_env = os.environ.get("MINIO_SECURE")
-    if secure_env is not None:
-        secure = secure_env.strip().lower() in ("1", "true", "yes", "on")
-    else:
-        secure = raw_endpoint.startswith("https://")
 
     minio_client = Minio(
         endpoint,
         access_key=access_key,
         secret_key=secret_key,
-        secure=secure,
+        secure=False,
     )
 
     if not minio_client.bucket_exists(MINIO_BUCKET):
         minio_client.make_bucket(MINIO_BUCKET)
 
     logger.info(
-        f"✅ MinIO ready (bucket={MINIO_BUCKET}, prefix={MINIO_UPLOAD_PREFIX}, endpoint={endpoint}, secure={secure})"
+        f"✅ MinIO ready (bucket={MINIO_BUCKET}, prefix={MINIO_UPLOAD_PREFIX}, endpoint={endpoint})"
     )
 
 
@@ -446,14 +439,14 @@ def upload_videos():
             continue
 
         try:
-            stream = file_storage.stream
-            stream.seek(0, 2)
-            size = stream.tell()
-            stream.seek(0)
+            file_storage.stream.seek(0)
+            payload = file_storage.read()
+            size = len(payload)
             if size == 0:
                 failed.append({'file': original_name, 'reason': 'Empty file'})
                 continue
 
+            file_storage.stream.seek(0)
             object_name = (
                 f"{MINIO_UPLOAD_PREFIX}/{upload_month}/{upload_day}/{label_folder}/"
                 f"{int(time.time() * 1000)}_{safe_name}"
@@ -590,10 +583,7 @@ def initialize_app():
     model, label_list = load_model_and_weights(model_path, label_map_path)
 
     # Initialize MinIO upload client for user videos
-    try:
-        init_minio_client()
-    except Exception as exc:
-        logger.warning(f"⚠️ MinIO unavailable at startup (uploads disabled): {exc}")
+    init_minio_client()
     
     # Initialize MediaPipe (shared instance)
     holistic = mp_holistic.Holistic(
@@ -616,10 +606,11 @@ def initialize_app():
 if __name__ == '__main__':
     initialize_app()
     dev_mode = os.environ.get("FLASK_DEV", "false").lower() == "true"
+    allow_unsafe_werkzeug = os.environ.get("ALLOW_UNSAFE_WERKZEUG", "true").lower() == "true"
     socketio.run(
         app,
         host='0.0.0.0',
         port=5000,
         debug=dev_mode,
-        allow_unsafe_werkzeug=dev_mode,
+        allow_unsafe_werkzeug=allow_unsafe_werkzeug,
     )

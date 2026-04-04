@@ -760,13 +760,43 @@ def store_to_minio(**context):
         gold_rows_file,
     ]
 
+    def _is_missing_iceberg_metadata(result: subprocess.CompletedProcess) -> bool:
+        merged = f"{result.stdout}\n{result.stderr}"
+        return "FileNotFoundException" in merged and "/metadata/" in merged
+
+    def _repair_catalog_entry(table_name: str) -> None:
+        pg_user = os.environ.get("POSTGRES_USER", "postgres")
+        pg_password = os.environ.get("POSTGRES_PASSWORD", "postgres")
+        pg_host = os.environ.get("ICEBERG_POSTGRES_HOST", "postgres")
+        pg_port = int(os.environ.get("ICEBERG_POSTGRES_PORT", "5432"))
+        pg_db = os.environ.get("ICEBERG_POSTGRES_DB", "iceberg")
+
+        conn = psycopg2.connect(
+            host=pg_host,
+            port=pg_port,
+            dbname=pg_db,
+            user=pg_user,
+            password=pg_password,
+        )
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM iceberg_tables WHERE table_name = %s",
+                    (table_name,),
+                )
+                deleted = cur.rowcount
+            conn.commit()
+            print(f"⚠️ Repaired stale Iceberg catalog pointer for {namespace}.{table_name} (deleted_rows={deleted})")
+        finally:
+            conn.close()
+
     def _append_with_repair(cmd: list[str], table_name: str) -> subprocess.CompletedProcess:
         result = subprocess.run(cmd, capture_output=True, text=True, cwd=PROJECT_ROOT)
         if result.returncode == 0:
             return result
 
-        if _is_missing_iceberg_metadata_output(result.stdout, result.stderr):
-            _repair_catalog_entry(namespace, table_name)
+        if _is_missing_iceberg_metadata(result):
+            _repair_catalog_entry(table_name)
             retry_result = subprocess.run(cmd, capture_output=True, text=True, cwd=PROJECT_ROOT)
             if retry_result.returncode == 0:
                 print(f"✅ Spark append recovered after catalog repair for {namespace}.{table_name}")
