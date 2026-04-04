@@ -3,7 +3,7 @@ from collections import defaultdict
 import argparse
 from src.utils.logger import *
 
-def main(dir):
+def main(dir, extension):
     counts = defaultdict(int)
 
     # Walk through label folders
@@ -13,8 +13,8 @@ def main(dir):
         if not os.path.isdir(label_dir):
             continue  # skip non-folders
 
-        # Count .mp4 files
-        num_videos = len([f for f in os.listdir(label_dir) if f.endswith(".mp4")])
+        # Count files
+        num_videos = len([f for f in os.listdir(label_dir) if f.endswith(extension)])
         counts[label] = num_videos
 
     for lbl, num in counts.items():
@@ -26,10 +26,12 @@ def main(dir):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dir", default="data/raw")
+    parser.add_argument("--extension", default="npy")
     args = parser.parse_args()
     dir = args.dir
+    extension = args.extension
 
     logger = setup_logger(f"count_samples_{dir.replace('/', '_')}")
     log_arguments(logger=logger, args=args)
 
-    main(dir)
+    main(dir, extension)
