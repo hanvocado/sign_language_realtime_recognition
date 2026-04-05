@@ -20,6 +20,7 @@ from pathlib import Path
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.exceptions import AirflowException
+from src.config.config import DATASET_NAME, SEQ_LEN
 
 # MLflow
 import mlflow
@@ -37,7 +38,6 @@ AWS_ACCESS_KEY = os.environ.get("AWS_ACCESS_KEY_ID", "minioadmin")
 AWS_SECRET_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY", "minioadmin")
 MINIO_S3_ENDPOINT = os.environ.get("MLFLOW_S3_ENDPOINT_URL", "http://minio:9000")
 PROJECT_ROOT = os.environ.get("PYTHONPATH", "/opt/airflow/project")
-DATASET_VERSION = os.environ.get("DATASET_VERSION", "v1").strip("/")
 ICEBERG_LANDMARKS_TABLE = os.environ.get("ICEBERG_GOLD_TRAINING_TABLE", "gold_training_landmarks_inventory")
 
 MINIO_ENDPOINT = os.environ.get("MINIO_ENDPOINT", "minio:9000")
@@ -166,7 +166,7 @@ def read_landmarks(**context):
             iceberg_rows = []
 
     if not minio_prefix and not iceberg_rows:
-        manifest_path = f"{PROJECT_ROOT}/data/preprocessing_manifest.json"
+        manifest_path = f"{PROJECT_ROOT}/data/{DATASET_NAME}/preprocessing_manifest.json"
         if not os.path.exists(manifest_path):
             raise AirflowException(
                 "No preprocessing manifest found and no minio_prefix provided in DAG config"
@@ -175,7 +175,11 @@ def read_landmarks(**context):
             manifest = json.load(f)
         run_id = run_id or manifest.get("run_id")
         minio_bucket = manifest.get("minio_bucket", minio_bucket)
-        minio_prefix = manifest.get("gold_minio_prefix") or manifest.get("minio_prefix")
+        minio_prefix = (
+            manifest.get("gold_landmarks_prefix")
+            or manifest.get("gold_minio_prefix")
+            or manifest.get("minio_prefix")
+        )
 
     if not minio_prefix and not iceberg_rows:
         raise AirflowException("Unable to resolve landmarks prefix from DAG config or manifest")
@@ -201,6 +205,10 @@ def read_landmarks(**context):
                 # landmarks/<run_id>/<label>/<file>.npy
                 rel_path = object_name.split("/", 2)[-1]
 
+            rel_parts = [p for p in rel_path.split("/") if p]
+            if len(rel_parts) >= 4:
+                rel_path = "/".join(rel_parts[-2:])
+
             local_path = os.path.join(raw_landmarks_dir, rel_path)
             os.makedirs(os.path.dirname(local_path), exist_ok=True)
             minio_client.fget_object(minio_bucket, object_name, local_path)
@@ -212,6 +220,9 @@ def read_landmarks(**context):
                 continue
 
             rel_path = obj.object_name[len(minio_prefix):].lstrip("/")
+            rel_parts = [p for p in rel_path.split("/") if p]
+            if len(rel_parts) >= 4:
+                rel_path = "/".join(rel_parts[-2:])
             local_path = os.path.join(raw_landmarks_dir, rel_path)
             os.makedirs(os.path.dirname(local_path), exist_ok=True)
             minio_client.fget_object(minio_bucket, obj.object_name, local_path)
@@ -404,13 +415,15 @@ def log_to_mlflow(**context):
             "normalization_config": json.dumps(normalization_config, ensure_ascii=False),
             "dataset_bucket": minio_bucket,
             "dataset_prefix": minio_prefix,
-            "dataset_version": DATASET_VERSION,
+            "dataset_name": DATASET_NAME,
+            "seq_len": SEQ_LEN,
             "iceberg_gold_training_table": ICEBERG_LANDMARKS_TABLE,
         })
         mlflow.set_tags(
             {
                 "medallion_layer": "gold",
-                "dataset_version": DATASET_VERSION,
+                "dataset_name": DATASET_NAME,
+                "seq_len": str(SEQ_LEN),
                 "data_source": "gold_training_landmarks",
             }
         )
@@ -421,12 +434,12 @@ def log_to_mlflow(**context):
                 mlflow.log_metric(metric_name, metric_value)
         
         # Log model artifact
-        mlflow.log_artifact(model_path, artifact_path=f"gold/models/{DATASET_VERSION}")
+        mlflow.log_artifact(model_path, artifact_path=f"gold/models/{DATASET_NAME}/seq_{SEQ_LEN}")
         
         # Log evaluation results
         eval_file = f"{run_dir}/evaluation_results.json"
         if os.path.exists(eval_file):
-            mlflow.log_artifact(eval_file, artifact_path=f"gold/evaluation/{DATASET_VERSION}")
+            mlflow.log_artifact(eval_file, artifact_path=f"gold/evaluation/{DATASET_NAME}/seq_{SEQ_LEN}")
         
         mlflow_run_id = run.info.run_id
     

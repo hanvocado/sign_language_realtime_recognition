@@ -8,6 +8,7 @@ models/checkpoints/best_epoch*.pth
 /*data*/
 best_epoch*.pth
 models/checkpoints/run_*/
+reset/
 
 *analysis*.md
 

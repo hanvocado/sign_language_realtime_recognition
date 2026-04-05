@@ -63,7 +63,7 @@ MIN_VOTES_FOR_RESULT = 3  # Increased from 2 to 3 - need stronger consensus (75%
 # Upload pipeline config
 MINIO_BUCKET = os.environ.get("MINIO_BUCKET", "data")
 MINIO_UPLOAD_PREFIX = os.environ.get(
-    "MINIO_UPLOAD_PREFIX", "lakehouse/bronze/user_upload"
+    "MINIO_UPLOAD_PREFIX", "lakehouse/bronze/wlasl/videos/user_uploads"
 ).strip("/")
 MAX_UPLOAD_FILES = int(os.environ.get("MAX_UPLOAD_FILES", "30"))
 ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".webm"}

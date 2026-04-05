@@ -22,6 +22,7 @@ from airflow.operators.python import PythonOperator
 # MinIO
 from minio import Minio
 from minio.commonconfig import CopySource
+from src.config.config import DATASET_NAME, SEQ_LEN
 
 # ================================================================
 # Configuration
@@ -36,35 +37,34 @@ elif MINIO_ENDPOINT.startswith("https://"):
     MINIO_ENDPOINT = MINIO_ENDPOINT.replace("https://", "", 1)
 PROJECT_ROOT = os.environ.get("PYTHONPATH", "/opt/airflow/project")
 MINIO_BUCKET = os.environ.get("MINIO_BUCKET", "data")
-DATASET_VERSION = os.environ.get("DATASET_VERSION", "v1").strip("/")
-MINIO_BRONZE_ROOT_PREFIX = os.environ.get(
-    "MINIO_BRONZE_ROOT_PREFIX", "lakehouse/bronze"
+
+MINIO_BRONZE_RAW_PREFIX = os.environ.get(
+    "MINIO_BRONZE_RAW_PREFIX", f"lakehouse/bronze/{DATASET_NAME}/videos/raw"
+).strip("/")
+MINIO_USER_UPLOAD_PREFIX = os.environ.get(
+    "MINIO_USER_UPLOAD_PREFIX", f"lakehouse/bronze/{DATASET_NAME}/videos/user_uploads"
 ).strip("/")
 MINIO_UPLOAD_PREFIX = os.environ.get(
-    "MINIO_UPLOAD_PREFIX", f"{MINIO_BRONZE_ROOT_PREFIX}/user_upload"
+    "MINIO_UPLOAD_PREFIX", MINIO_USER_UPLOAD_PREFIX
 ).strip("/")
-MINIO_BRONZE_LOCAL_PREFIX = os.environ.get(
-    "MINIO_BRONZE_LOCAL_PREFIX", f"{MINIO_BRONZE_ROOT_PREFIX}/local_dataset"
+MINIO_SILVER_PREFIX = os.environ.get(
+    "MINIO_SILVER_PREFIX", f"lakehouse/silver/{DATASET_NAME}/videos/preprocessed"
 ).strip("/")
-MINIO_LOCAL_DATASET_PREFIX = os.environ.get(
-    "MINIO_LOCAL_DATASET_PREFIX", f"lakehouse/silver/preprocessed/{DATASET_VERSION}/raw_videos"
+MINIO_GOLD_ROOT_PREFIX = os.environ.get(
+    "MINIO_GOLD_ROOT_PREFIX", f"lakehouse/gold/{DATASET_NAME}/npy/{SEQ_LEN}"
 ).strip("/")
-MINIO_LANDMARKS_PREFIX = os.environ.get(
-    "MINIO_LANDMARKS_PREFIX", f"lakehouse/silver/preprocessed/{DATASET_VERSION}/landmarks"
-).strip("/")
-MINIO_GOLD_TRAINING_PREFIX = os.environ.get(
-    "MINIO_GOLD_TRAINING_PREFIX", "lakehouse/gold/training_dataset"
-).strip("/")
+
 ICEBERG_BRONZE_TABLE = os.environ.get("ICEBERG_BRONZE_TABLE", "bronze_user_upload_inventory")
 ICEBERG_SILVER_RAW_TABLE = os.environ.get("ICEBERG_SILVER_RAW_TABLE", "silver_raw_inventory")
-ICEBERG_SILVER_LANDMARKS_TABLE = os.environ.get("ICEBERG_SILVER_LANDMARKS_TABLE", "silver_landmarks_inventory")
 ICEBERG_GOLD_TRAINING_TABLE = os.environ.get("ICEBERG_GOLD_TRAINING_TABLE", "gold_training_landmarks_inventory")
 GOLD_VERSION_STATE_PATH = os.environ.get(
-    "GOLD_VERSION_STATE_PATH", f"{PROJECT_ROOT}/data/gold_version_state.json"
+    "GOLD_VERSION_STATE_PATH", f"{PROJECT_ROOT}/data/{DATASET_NAME}/gold_version_state.json"
 )
 VIDEO_EXTENSIONS = (".mp4", ".avi", ".mov", ".mkv", ".webm")
-LOCAL_RAW_SOURCE_DIR = f"{PROJECT_ROOT}/data/raw_unprocessed"
-PREPROCESS_INPUT_STAGING_DIR = f"{PROJECT_ROOT}/data/raw_stage"
+LOCAL_RAW_SOURCE_DIR = f"{PROJECT_ROOT}/data/{DATASET_NAME}/videos/raw"
+LOCAL_PREPROCESSED_DIR = f"{PROJECT_ROOT}/data/{DATASET_NAME}/videos/preprocessed"
+LOCAL_NPY_DIR = f"{PROJECT_ROOT}/data/{DATASET_NAME}/npy/{SEQ_LEN}"
+PREPROCESS_INPUT_STAGING_DIR = f"{PROJECT_ROOT}/data/{DATASET_NAME}/videos/staging"
 
 # MinIO client
 minio_client = Minio(
@@ -242,23 +242,40 @@ def _save_gold_state(state: dict) -> None:
     with open(GOLD_VERSION_STATE_PATH, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
 
-def prepare_preprocess_run(**context):
-    """Create directory structure for preprocessing"""
+def _ensure_run_context(ti) -> dict:
+    """Ensure run context exists in XCom and return it."""
+    run_dir = ti.xcom_pull(key="run_dir")
+    run_id = ti.xcom_pull(key="run_id")
+    run_month = ti.xcom_pull(key="run_month")
+    run_stamp = ti.xcom_pull(key="run_stamp")
+
+    if run_dir and run_id and run_month and run_stamp:
+        return {
+            "run_dir": run_dir,
+            "run_id": run_id,
+            "run_month": run_month,
+            "run_stamp": run_stamp,
+        }
 
     now = datetime.now()
     run_id = now.strftime("%Y%m%d_%H%M%S")
     run_month = now.strftime("%Y%m")
     run_stamp = now.strftime("%Y%m%dT%H%M%S")
     run_dir = f"{PROJECT_ROOT}/data/runs/preprocess_{run_id}"
-    
     os.makedirs(run_dir, exist_ok=True)
-    print(f"✅ Preprocessing run directory created: {run_dir}")
-    
-    # Push to XCom for downstream tasks
-    context["task_instance"].xcom_push(key="run_dir", value=run_dir)
-    context["task_instance"].xcom_push(key="run_id", value=run_id)
-    context["task_instance"].xcom_push(key="run_month", value=run_month)
-    context["task_instance"].xcom_push(key="run_stamp", value=run_stamp)
+
+    ti.xcom_push(key="run_dir", value=run_dir)
+    ti.xcom_push(key="run_id", value=run_id)
+    ti.xcom_push(key="run_month", value=run_month)
+    ti.xcom_push(key="run_stamp", value=run_stamp)
+    print(f"✅ Internal run context prepared: run_id={run_id}, run_dir={run_dir}")
+
+    return {
+        "run_dir": run_dir,
+        "run_id": run_id,
+        "run_month": run_month,
+        "run_stamp": run_stamp,
+    }
 
 
 def ingest_local_raw_to_bronze(**context):
@@ -291,10 +308,7 @@ def ingest_local_raw_to_bronze(**context):
         label = rel_path.parts[0]
         filename = rel_path.name
 
-        object_name = (
-            f"{MINIO_BRONZE_LOCAL_PREFIX}/{ingest_month}/{ingest_day}/{label}/"
-            f"{filename}"
-        )
+        object_name = f"{MINIO_BRONZE_RAW_PREFIX}/{ingest_month}/{ingest_day}/{label}/{filename}"
         try:
             minio_client.fput_object(MINIO_BUCKET, object_name, src_abs)
             uploaded += 1
@@ -324,16 +338,15 @@ def sync_pending_bronze_inputs(**context):
     except Exception as exc:
         raise Exception(f"Cannot verify MinIO bucket {MINIO_BUCKET}: {exc}")
 
-    run_dir = context["task_instance"].xcom_pull(task_ids="prepare_run_context", key="run_dir")
-    if not run_dir:
-        run_dir = f"{PROJECT_ROOT}/data/runs/preprocess_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        os.makedirs(run_dir, exist_ok=True)
+    run_ctx = _ensure_run_context(context["task_instance"])
+    run_dir = run_ctx["run_dir"]
     processed_names, processed_etags = _load_processed_checkpoint_from_iceberg(run_dir)
 
-    source_configs = [
-        ("local_dataset", f"{MINIO_BRONZE_LOCAL_PREFIX}/"),
-        ("user_upload", f"{MINIO_UPLOAD_PREFIX}/"),
-    ]
+    source_configs = [("bronze_raw", f"{MINIO_BRONZE_RAW_PREFIX}/")]
+    if MINIO_UPLOAD_PREFIX.rstrip("/") != MINIO_BRONZE_RAW_PREFIX.rstrip("/"):
+        source_configs.append(("user_upload", f"{MINIO_UPLOAD_PREFIX}/"))
+    if MINIO_USER_UPLOAD_PREFIX.rstrip("/") not in {p.rstrip("/") for _, p in source_configs}:
+        source_configs.append(("user_upload", f"{MINIO_USER_UPLOAD_PREFIX}/"))
 
     pending_inputs = []
     skipped = 0
@@ -390,6 +403,7 @@ def sync_pending_bronze_inputs(**context):
 
 def bronze_prepare_inputs(**context):
     """Single Bronze stage: ingest local snapshot then sync pending Bronze inputs."""
+    _ensure_run_context(context["task_instance"])
     ingest_local_raw_to_bronze(**context)
     sync_pending_bronze_inputs(**context)
 
@@ -404,16 +418,16 @@ def preprocess_videos(**context):
     """Normalize videos using existing preprocessing code"""
 
     new_uploads = context["task_instance"].xcom_pull(
-        task_ids="bronze_ingest_data", key="new_uploads"
+        task_ids="bronze_ingest_raw_videos", key="new_uploads"
     ) or []
     if not new_uploads:
         print("ℹ️ No new uploaded videos to preprocess. Skipping preprocessing step.")
         return
 
     raw_dir = context["task_instance"].xcom_pull(
-        task_ids="bronze_ingest_data", key="sync_raw_dir"
+        task_ids="bronze_ingest_raw_videos", key="sync_raw_dir"
     ) or PREPROCESS_INPUT_STAGING_DIR
-    output_dir = f"{PROJECT_ROOT}/data/raw"
+    output_dir = LOCAL_PREPROCESSED_DIR
 
     os.makedirs(output_dir, exist_ok=True)
 
@@ -460,15 +474,15 @@ def extract_landmarks(**context):
     """Extract MediaPipe landmarks from videos"""
 
     new_uploads = context["task_instance"].xcom_pull(
-        task_ids="bronze_ingest_data", key="new_uploads"
+        task_ids="bronze_ingest_raw_videos", key="new_uploads"
     ) or []
     if not new_uploads:
         print("ℹ️ No new uploaded videos to extract landmarks. Skipping extraction step.")
-        context["task_instance"].xcom_push(key="landmarks_dir", value=f"{PROJECT_ROOT}/data/npy")
+        context["task_instance"].xcom_push(key="landmarks_dir", value=LOCAL_NPY_DIR)
         return
 
-    preprocessed_dir = f"{PROJECT_ROOT}/data/raw"
-    landmarks_dir = f"{PROJECT_ROOT}/data/npy"
+    preprocessed_dir = LOCAL_PREPROCESSED_DIR
+    landmarks_dir = LOCAL_NPY_DIR
 
     os.makedirs(landmarks_dir, exist_ok=True)
 
@@ -485,6 +499,7 @@ def extract_landmarks(**context):
             "python", "-u", f"{PROJECT_ROOT}/src/preprocess/video2npy.py",
             "--input_dir", preprocessed_dir,
             "--output_dir", landmarks_dir,
+            "--seq_len", str(SEQ_LEN),
             "--skip_existing",
         ],
         cwd=PROJECT_ROOT,
@@ -509,7 +524,7 @@ def extract_landmarks(**context):
             if os.path.exists(npy_path):
                 silver_landmarks_ready_count += 1
 
-    print(f"✅ Silver landmark outputs ready: {silver_landmarks_ready_count} file(s)")
+    print(f"✅ Gold landmark outputs ready: {silver_landmarks_ready_count} file(s)")
     context["task_instance"].xcom_push(
         key="silver_landmarks_ready_count", value=silver_landmarks_ready_count
     )
@@ -520,18 +535,26 @@ def extract_landmarks(**context):
     context["task_instance"].xcom_push(key="landmarks_dir", value=landmarks_dir)
 
 def store_to_minio(**context):
-    """Upload raw videos + landmarks to MinIO and create preprocessing manifest"""
+    """Upload Silver preprocessed videos and Gold landmarks to MinIO and create manifest"""
+    # Keep only one Gold task in DAG: this task performs both extraction and publish.
+    extract_landmarks(**context)
 
-    landmarks_dir = context["task_instance"].xcom_pull(task_ids="silver_extract_landmarks", key="landmarks_dir")
-    run_id = context["task_instance"].xcom_pull(task_ids="prepare_run_context", key="run_id")
-    run_month = context["task_instance"].xcom_pull(task_ids="prepare_run_context", key="run_month")
-    run_stamp = context["task_instance"].xcom_pull(task_ids="prepare_run_context", key="run_stamp")
-    if not run_stamp:
-        run_stamp = run_id
-    run_dir = context["task_instance"].xcom_pull(task_ids="prepare_run_context", key="run_dir")
-    raw_dir = f"{PROJECT_ROOT}/data/raw"
+    landmarks_dir = context["task_instance"].xcom_pull(
+        task_ids="gold_extract_landmarks", key="landmarks_dir"
+    )
+    run_id = context["task_instance"].xcom_pull(task_ids="bronze_ingest_raw_videos", key="run_id")
+    run_month = context["task_instance"].xcom_pull(task_ids="bronze_ingest_raw_videos", key="run_month")
+    run_stamp = context["task_instance"].xcom_pull(task_ids="bronze_ingest_raw_videos", key="run_stamp")
+    run_dir = context["task_instance"].xcom_pull(task_ids="bronze_ingest_raw_videos", key="run_dir")
+    if not run_id or not run_month or not run_stamp or not run_dir:
+        run_ctx = _ensure_run_context(context["task_instance"])
+        run_id = run_ctx["run_id"]
+        run_month = run_ctx["run_month"]
+        run_stamp = run_ctx["run_stamp"]
+        run_dir = run_ctx["run_dir"]
+    preprocessed_dir = LOCAL_PREPROCESSED_DIR
     new_uploads = context["task_instance"].xcom_pull(
-        task_ids="bronze_ingest_data", key="new_uploads"
+        task_ids="bronze_ingest_raw_videos", key="new_uploads"
     ) or []
 
     video_exts = VIDEO_EXTENSIONS
@@ -543,8 +566,9 @@ def store_to_minio(**context):
     except Exception as e:
         print(f"MinIO bucket check failed: {e}")
     
-    raw_inventory_rows = []
-    landmark_inventory_rows = []
+    silver_inventory_rows = []
+    gold_inventory_rows = []
+    new_landmark_candidates = []
     bronze_inventory_rows = []
 
     # Upload only newly generated preprocessed raw segments
@@ -558,9 +582,9 @@ def store_to_minio(**context):
         label = item.get("label")
 
         stem = Path(local_input_rel).stem
-        pattern = os.path.join(raw_dir, label, f"{stem}_*.mp4")
+        pattern = os.path.join(preprocessed_dir, label, f"{stem}_*.mp4")
         segment_files = sorted(glob.glob(pattern))
-        fallback_segment = os.path.join(raw_dir, label, f"{stem}.mp4")
+        fallback_segment = os.path.join(preprocessed_dir, label, f"{stem}.mp4")
         if not segment_files and os.path.exists(fallback_segment):
             segment_files = [fallback_segment]
 
@@ -571,18 +595,18 @@ def store_to_minio(**context):
             if not file_path.lower().endswith(video_exts):
                 continue
 
-            rel_path = os.path.relpath(file_path, raw_dir)
-            object_name = f"{MINIO_LOCAL_DATASET_PREFIX}/{run_month}/{run_stamp}/{rel_path}"
+            rel_path = os.path.relpath(file_path, preprocessed_dir)
+            object_name = f"{MINIO_SILVER_PREFIX}/{run_month}/{run_stamp}/{rel_path}"
 
             try:
                 result = minio_client.fput_object(MINIO_BUCKET, object_name, file_path)
                 uploaded_raw_files += 1
 
-                raw_inventory_rows.append(
+                silver_inventory_rows.append(
                     {
                         "run_id": run_id,
                         "object_path": object_name,
-                        "file_type": "raw_video",
+                        "file_type": "silver_preprocessed_video",
                         "label": label,
                         "size_bytes": os.path.getsize(file_path),
                         "etag": result.etag,
@@ -597,22 +621,15 @@ def store_to_minio(**context):
                 print(f"⚠️ Missing landmark file for segment: {npy_path}")
                 continue
 
-            landmark_object_name = f"{MINIO_LANDMARKS_PREFIX}/{run_month}/{run_stamp}/{rel_npy}"
-            try:
-                result = minio_client.fput_object(MINIO_BUCKET, landmark_object_name, npy_path)
-                uploaded_landmark_files += 1
-                landmark_inventory_rows.append(
-                    {
-                        "run_id": run_id,
-                        "object_path": landmark_object_name,
-                        "file_type": "landmark_npy",
-                        "label": label,
-                        "size_bytes": os.path.getsize(npy_path),
-                        "etag": result.etag,
-                    }
-                )
-            except Exception as e:
-                print(f"Error uploading landmark file {npy_path}: {e}")
+            new_landmark_candidates.append(
+                {
+                    "label": label,
+                    "rel_npy": rel_npy,
+                    "local_path": npy_path,
+                    "size_bytes": os.path.getsize(npy_path),
+                }
+            )
+            uploaded_landmark_files += 1
 
         if source_object:
             bronze_inventory_rows.append(
@@ -626,7 +643,7 @@ def store_to_minio(**context):
                 }
             )
 
-    print("✅ Silver publish to MinIO complete")
+    print("✅ Silver incremental publish complete")
 
     # Append inventory to Iceberg using Spark engine
     namespace = os.environ.get("ICEBERG_NAMESPACE", "sign_language")
@@ -637,77 +654,93 @@ def store_to_minio(**context):
     )
     spark_job = f"{PROJECT_ROOT}/src/pipeline/spark_iceberg_inventory.py"
 
-    raw_rows_file = f"{run_dir}/raw_inventory_rows.json"
-    landmarks_rows_file = f"{run_dir}/landmarks_inventory_rows.json"
-    bronze_rows_file = f"{run_dir}/bronze_inventory_rows.json"
+    silver_rows_file = f"{run_dir}/silver_inventory_rows.json"
     gold_rows_file = f"{run_dir}/gold_training_inventory_rows.json"
-    with open(raw_rows_file, "w", encoding="utf-8") as f:
-        json.dump(raw_inventory_rows, f, ensure_ascii=False, indent=2)
-    with open(landmarks_rows_file, "w", encoding="utf-8") as f:
-        json.dump(landmark_inventory_rows, f, ensure_ascii=False, indent=2)
+    bronze_rows_file = f"{run_dir}/bronze_inventory_rows.json"
+    with open(silver_rows_file, "w", encoding="utf-8") as f:
+        json.dump(silver_inventory_rows, f, ensure_ascii=False, indent=2)
     with open(bronze_rows_file, "w", encoding="utf-8") as f:
         json.dump(bronze_inventory_rows, f, ensure_ascii=False, indent=2)
 
-    gold_inventory_rows = []
+    gold_state = _load_gold_state()
     gold_version = None
     gold_prefix = None
     if uploaded_landmark_files > 0:
         gold_state = _load_gold_state()
-        next_version = int(gold_state.get("latest_version", 0)) + 1
+        previous_version = int(gold_state.get("latest_version", 0))
+        next_version = previous_version + 1
         gold_version = f"v{next_version:04d}"
-        gold_prefix = f"{MINIO_GOLD_TRAINING_PREFIX}/{gold_version}/landmarks"
+        gold_prefix = f"{MINIO_GOLD_ROOT_PREFIX}/{gold_version}"
 
-        silver_prefix = f"{MINIO_LANDMARKS_PREFIX}/"
-        for obj in minio_client.list_objects(MINIO_BUCKET, prefix=silver_prefix, recursive=True):
-            if not obj.object_name.endswith(".npy"):
-                continue
-
-            rel = obj.object_name[len(silver_prefix):]
-            parts = rel.split("/")
-            if len(parts) >= 4:
-                run_month_part, run_stamp_part, label, *rest = parts
-                filename = "_".join(rest)
-                gold_object_name = (
-                    f"{gold_prefix}/{label}/{run_month_part}_{run_stamp_part}_{filename}"
+        if previous_version > 0:
+            previous_prefix = f"{MINIO_GOLD_ROOT_PREFIX}/v{previous_version:04d}/"
+            copied = 0
+            for obj in minio_client.list_objects(MINIO_BUCKET, prefix=previous_prefix, recursive=True):
+                if not obj.object_name.endswith(".npy"):
+                    continue
+                rel = obj.object_name[len(previous_prefix):]
+                dst = f"{gold_prefix}/{rel}"
+                minio_client.copy_object(
+                    MINIO_BUCKET,
+                    dst,
+                    CopySource(MINIO_BUCKET, obj.object_name),
                 )
-            elif len(parts) >= 2:
-                label = parts[-2]
-                filename = parts[-1]
-                gold_object_name = f"{gold_prefix}/{label}/{filename}"
-            else:
-                continue
+                copied += 1
+            print(f"✅ Gold snapshot seed copied from previous version: {copied} file(s)")
 
-            minio_client.copy_object(
-                MINIO_BUCKET,
-                gold_object_name,
-                CopySource(MINIO_BUCKET, obj.object_name),
-            )
-
+        for item in new_landmark_candidates:
+            dst = f"{gold_prefix}/{item['rel_npy']}"
+            result = minio_client.fput_object(MINIO_BUCKET, dst, item["local_path"])
             gold_inventory_rows.append(
                 {
                     "run_id": gold_version,
-                    "object_path": gold_object_name,
-                    "file_type": "gold_training_landmark",
+                    "object_path": dst,
+                    "file_type": "gold_landmark_snapshot",
+                    "label": item["label"],
+                    "size_bytes": item["size_bytes"],
+                    "etag": result.etag,
+                }
+            )
+
+        # Rebuild full snapshot inventory rows so training gets complete Gold state.
+        snapshot_rows = []
+        full_prefix = f"{gold_prefix}/"
+        for obj in minio_client.list_objects(MINIO_BUCKET, prefix=full_prefix, recursive=True):
+            if not obj.object_name.endswith(".npy"):
+                continue
+            rel = obj.object_name[len(full_prefix):]
+            label = rel.split("/")[0] if "/" in rel else "unknown"
+            snapshot_rows.append(
+                {
+                    "run_id": gold_version,
+                    "object_path": obj.object_name,
+                    "file_type": "gold_landmark_snapshot",
                     "label": label,
                     "size_bytes": obj.size,
                     "etag": (obj.etag or "").strip('"'),
                 }
             )
 
+        gold_inventory_rows = snapshot_rows
         gold_state["latest_version"] = next_version
         gold_state["last_source_run_id"] = run_id
         gold_state["last_updated_at"] = datetime.now().isoformat()
+        gold_state["latest_snapshot_prefix"] = gold_prefix
         _save_gold_state(gold_state)
         print(
-            f"✅ Published Gold training dataset snapshot: {gold_version} ({len(gold_inventory_rows)} files)"
+            f"✅ Published Gold full snapshot {gold_version}: {len(gold_inventory_rows)} file(s)"
         )
     else:
-        print("ℹ️ No new landmarks in this run, Gold training dataset version unchanged.")
+        latest_version = int(gold_state.get("latest_version", 0))
+        if latest_version > 0:
+            gold_version = f"v{latest_version:04d}"
+            gold_prefix = f"{MINIO_GOLD_ROOT_PREFIX}/{gold_version}"
+        print("ℹ️ No new landmarks in this run, Gold snapshot version unchanged.")
 
     with open(gold_rows_file, "w", encoding="utf-8") as f:
         json.dump(gold_inventory_rows, f, ensure_ascii=False, indent=2)
 
-    raw_cmd = [
+    silver_cmd = [
         "spark-submit",
         "--master",
         spark_master,
@@ -718,20 +751,7 @@ def store_to_minio(**context):
         "--table",
         ICEBERG_SILVER_RAW_TABLE,
         "--rows-file",
-        raw_rows_file,
-    ]
-    landmark_cmd = [
-        "spark-submit",
-        "--master",
-        spark_master,
-        "--packages",
-        spark_packages,
-        spark_job,
-        "append",
-        "--table",
-        ICEBERG_SILVER_LANDMARKS_TABLE,
-        "--rows-file",
-        landmarks_rows_file,
+        silver_rows_file,
     ]
     bronze_cmd = [
         "spark-submit",
@@ -813,8 +833,7 @@ def store_to_minio(**context):
         )
 
     _append_with_repair(bronze_cmd, ICEBERG_BRONZE_TABLE)
-    _append_with_repair(raw_cmd, ICEBERG_SILVER_RAW_TABLE)
-    _append_with_repair(landmark_cmd, ICEBERG_SILVER_LANDMARKS_TABLE)
+    _append_with_repair(silver_cmd, ICEBERG_SILVER_RAW_TABLE)
     if gold_inventory_rows:
         _append_with_repair(gold_cmd, ICEBERG_GOLD_TRAINING_TABLE)
 
@@ -825,30 +844,35 @@ def store_to_minio(**context):
         "run_id": run_id,
         "run_stamp": run_stamp,
         "timestamp": datetime.now().isoformat(),
-        "local_raw_dir": raw_dir,
-        "minio_raw_prefix": f"{MINIO_LOCAL_DATASET_PREFIX}/{run_month}/{run_stamp}",
+        "dataset_name": DATASET_NAME,
+        "seq_len": SEQ_LEN,
+        "local_raw_dir": LOCAL_RAW_SOURCE_DIR,
+        "local_preprocessed_dir": preprocessed_dir,
+        "minio_raw_prefix": f"{MINIO_BRONZE_RAW_PREFIX}/{run_month}/{run_stamp}",
+        "minio_preprocessed_prefix": f"{MINIO_SILVER_PREFIX}/{run_month}/{run_stamp}",
         "raw_files_count": uploaded_raw_files,
         "local_landmarks_dir": landmarks_dir,
-        "minio_prefix": f"{MINIO_LANDMARKS_PREFIX}/{run_month}/{run_stamp}",
+        "minio_prefix": gold_prefix,
+        "gold_landmarks_prefix": gold_prefix,
         "minio_bucket": MINIO_BUCKET,
         "landmark_files_count": uploaded_landmark_files,
         "synced_new_uploads": len(new_uploads),
-        "dataset_version": DATASET_VERSION,
         "minio_upload_prefix": MINIO_UPLOAD_PREFIX,
-        "minio_local_dataset_prefix": MINIO_LOCAL_DATASET_PREFIX,
-        "minio_landmarks_prefix": MINIO_LANDMARKS_PREFIX,
+        "minio_bronze_raw_prefix": MINIO_BRONZE_RAW_PREFIX,
+        "minio_user_upload_prefix": MINIO_USER_UPLOAD_PREFIX,
+        "minio_silver_prefix": MINIO_SILVER_PREFIX,
+        "minio_gold_root_prefix": MINIO_GOLD_ROOT_PREFIX,
         "gold_version": gold_version,
         "gold_minio_prefix": gold_prefix,
-        "minio_gold_training_prefix": MINIO_GOLD_TRAINING_PREFIX,
         "iceberg_tables": {
             "bronze": f"{namespace}.{ICEBERG_BRONZE_TABLE}",
             "silver_raw": f"{namespace}.{ICEBERG_SILVER_RAW_TABLE}",
-            "silver_landmarks": f"{namespace}.{ICEBERG_SILVER_LANDMARKS_TABLE}",
             "gold_training": f"{namespace}.{ICEBERG_GOLD_TRAINING_TABLE}",
         },
     }
     
-    manifest_path = f"{PROJECT_ROOT}/data/preprocessing_manifest.json"
+    manifest_path = f"{PROJECT_ROOT}/data/{DATASET_NAME}/preprocessing_manifest.json"
+    os.makedirs(os.path.dirname(manifest_path), exist_ok=True)
     with open(manifest_path, "w") as f:
         json.dump(manifest, f, indent=2)
     
@@ -866,36 +890,25 @@ def store_to_minio(**context):
 with DAG(
     dag_id="preprocessing_pipeline",
     default_args=default_args,
-    description="Sign Language Preprocessing: Videos → Landmarks → MinIO",
+    description="Bronze raw videos -> Silver preprocessed videos -> Gold landmarks",
     schedule_interval=None,  # Manual trigger
     catchup=False,
     tags=["preprocessing", "sign-language"],
 ) as dag:
-    
-    prepare = PythonOperator(
-        task_id="prepare_run_context",
-        python_callable=prepare_preprocess_run,
+    bronze_ingest = PythonOperator(
+        task_id="bronze_ingest_raw_videos",
+        python_callable=bronze_prepare_inputs,
     )
-    
-    preprocess = PythonOperator(
+
+    silver_preprocess = PythonOperator(
         task_id="silver_preprocess_videos",
         python_callable=preprocess_videos,
     )
 
-    bronze_prepare = PythonOperator(
-        task_id="bronze_ingest_data",
-        python_callable=bronze_prepare_inputs,
-    )
-    
-    extract = PythonOperator(
-        task_id="silver_extract_landmarks",
-        python_callable=extract_landmarks,
-    )
-    
-    store = PythonOperator(
-        task_id="gold_publish_dataset",
+    gold_publish = PythonOperator(
+        task_id="gold_extract_landmarks",
         python_callable=store_to_minio,
     )
     
     # Task dependencies
-    prepare >> bronze_prepare >> preprocess >> extract >> store
+    bronze_ingest >> silver_preprocess >> gold_publish
