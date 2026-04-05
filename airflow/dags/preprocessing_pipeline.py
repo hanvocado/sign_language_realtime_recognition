@@ -12,6 +12,8 @@ import json
 import glob
 import subprocess
 import shutil
+import html
+from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -19,6 +21,9 @@ import psycopg2
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator
+from airflow.operators.empty import EmptyOperator
+from airflow.utils.task_group import TaskGroup
+from airflow.utils.email import send_email
 # MinIO
 from minio import Minio
 from minio.commonconfig import CopySource
@@ -84,6 +89,110 @@ default_args = {
     "retries": 1,
     "retry_delay": timedelta(minutes=5),
 }
+
+
+def task_failure_email_alert(context):
+    """Send rich failure alert email with task/run states and processing metrics."""
+    recipients_raw = os.environ.get("AIRFLOW_ALERT_EMAIL_TO", "").strip()
+    if not recipients_raw:
+        print("ℹ️ AIRFLOW_ALERT_EMAIL_TO is empty, skip failure email alert.")
+        return
+
+    recipients = [item.strip() for item in recipients_raw.split(",") if item.strip()]
+    if not recipients:
+        print("ℹ️ No valid alert recipients found, skip failure email alert.")
+        return
+
+    dag_id = context.get("dag").dag_id if context.get("dag") else "unknown_dag"
+    ti = context.get("task_instance")
+    task_id = ti.task_id if ti else "unknown_task"
+    task_state = ti.state if ti and ti.state else "unknown"
+    run_id = context.get("run_id", "unknown_run")
+    logical_date = context.get("logical_date")
+    exception_text = context.get("exception")
+    exception_text = html.escape(str(exception_text)) if exception_text else "No exception detail"
+    log_url = ti.log_url if ti else ""
+
+    dag_run = context.get("dag_run")
+    dag_run_state = dag_run.get_state() if dag_run else "unknown"
+
+    state_counts: dict[str, int] = {}
+    failed_task_ids: list[str] = []
+    if dag_run:
+        for task_inst in dag_run.get_task_instances():
+            state = task_inst.state or "none"
+            state_counts[state] = state_counts.get(state, 0) + 1
+            if state == "failed":
+                failed_task_ids.append(task_inst.task_id)
+
+    def _safe_xcom(task_ids: str, key: str):
+        if not ti:
+            return None
+        try:
+            return ti.xcom_pull(task_ids=task_ids, key=key)
+        except Exception:
+            return None
+
+    log_tail_text = "Log tail unavailable"
+    if ti:
+        log_filepath = getattr(ti, "log_filepath", None)
+        if log_filepath and os.path.exists(log_filepath):
+            try:
+                with open(log_filepath, "r", encoding="utf-8", errors="ignore") as log_file:
+                    tail_lines = deque(log_file, maxlen=60)
+                log_tail_text = "".join(tail_lines).strip() or "Log file is empty"
+            except Exception as exc:
+                log_tail_text = f"Cannot read log tail: {exc}"
+
+    processing_metrics = {
+        "local_ingested_count": _safe_xcom("bronze_ingest_local_raw", "local_ingested_count"),
+        "synced_raw_count": _safe_xcom("bronze_collect_unprocessed_inputs", "synced_raw_count"),
+        "silver_raw_ready_count": _safe_xcom("silver_preprocess_videos", "silver_raw_ready_count"),
+        "silver_landmarks_ready_count": _safe_xcom("gold_extract_landmarks", "silver_landmarks_ready_count"),
+        "manifest_path": _safe_xcom("gold_merge_snapshot", "manifest_path"),
+    }
+
+    # Normalize values for email readability.
+    normalized_metrics = {
+        k: ("N/A" if v is None else html.escape(str(v))) for k, v in processing_metrics.items()
+    }
+
+    failed_tasks_text = ", ".join(failed_task_ids) if failed_task_ids else "N/A"
+    state_counts_text = html.escape(json.dumps(state_counts, ensure_ascii=False)) if state_counts else "{}"
+    log_tail_html = html.escape(log_tail_text)
+
+    subject = f"[Airflow][FAILED] {dag_id}.{task_id}"
+    html_content = (
+        "<h3>Airflow Task Failed</h3>"
+        f"<p><b>DAG:</b> {dag_id}</p>"
+        f"<p><b>Task:</b> {task_id}</p>"
+        f"<p><b>Task State:</b> {task_state}</p>"
+        f"<p><b>Run ID:</b> {run_id}</p>"
+        f"<p><b>DAG Run State:</b> {dag_run_state}</p>"
+        f"<p><b>Logical Date:</b> {logical_date}</p>"
+        f"<p><b>Exception:</b> {exception_text}</p>"
+        f"<p><b>Failed Tasks (current run):</b> {html.escape(failed_tasks_text)}</p>"
+        f"<p><b>Task State Counts:</b> {state_counts_text}</p>"
+        "<h4>Processing Metrics</h4>"
+        f"<p><b>Bronze local_ingested_count:</b> {normalized_metrics['local_ingested_count']}</p>"
+        f"<p><b>Bronze synced_raw_count:</b> {normalized_metrics['synced_raw_count']}</p>"
+        f"<p><b>Silver silver_raw_ready_count:</b> {normalized_metrics['silver_raw_ready_count']}</p>"
+        f"<p><b>Gold silver_landmarks_ready_count:</b> {normalized_metrics['silver_landmarks_ready_count']}</p>"
+        f"<p><b>Manifest path:</b> {normalized_metrics['manifest_path']}</p>"
+        "<h4>Task Log Tail (last 60 lines)</h4>"
+        f"<pre>{log_tail_html}</pre>"
+        f"<p><a href=\"{log_url}\">Open Task Log</a></p>"
+    )
+
+    try:
+        send_email(to=recipients, subject=subject, html_content=html_content)
+        print(f"✅ Failure alert email sent to: {recipients}")
+    except Exception as exc:
+        print(f"⚠️ Failed to send failure email alert: {exc}")
+
+
+# Apply callback at task level so each failed task can trigger alert immediately.
+default_args["on_failure_callback"] = task_failure_email_alert
 
 # ================================================================
 # Task Functions
@@ -278,6 +387,11 @@ def _ensure_run_context(ti) -> dict:
     }
 
 
+def prepare_run_context(**context):
+    """Prepare run context for downstream Bronze/Silver/Gold tasks."""
+    _ensure_run_context(context["task_instance"])
+
+
 def ingest_local_raw_to_bronze(**context):
     """Upload current local raw snapshot into Bronze local_dataset partition."""
 
@@ -400,32 +514,18 @@ def sync_pending_bronze_inputs(**context):
     context["task_instance"].xcom_push(key="synced_raw_count", value=len(pending_inputs))
     context["task_instance"].xcom_push(key="sync_raw_dir", value=raw_dir)
 
-
-def bronze_prepare_inputs(**context):
-    """Single Bronze stage: ingest local snapshot then sync pending Bronze inputs."""
-    _ensure_run_context(context["task_instance"])
-    ingest_local_raw_to_bronze(**context)
-    sync_pending_bronze_inputs(**context)
-
-    ti = context["task_instance"]
-    pending_inputs = ti.xcom_pull(key="new_uploads") or []
-
-    ti.xcom_push(key="new_uploads", value=pending_inputs)
-    ti.xcom_push(key="sync_raw_dir", value=PREPROCESS_INPUT_STAGING_DIR)
-    print(f"✅ Bronze pending inputs prepared: {len(pending_inputs)} item(s)")
-
 def preprocess_videos(**context):
     """Normalize videos using existing preprocessing code"""
 
     new_uploads = context["task_instance"].xcom_pull(
-        task_ids="bronze_ingest_raw_videos", key="new_uploads"
+        task_ids="bronze_collect_unprocessed_inputs", key="new_uploads"
     ) or []
     if not new_uploads:
         print("ℹ️ No new uploaded videos to preprocess. Skipping preprocessing step.")
         return
 
     raw_dir = context["task_instance"].xcom_pull(
-        task_ids="bronze_ingest_raw_videos", key="sync_raw_dir"
+        task_ids="bronze_collect_unprocessed_inputs", key="sync_raw_dir"
     ) or PREPROCESS_INPUT_STAGING_DIR
     output_dir = LOCAL_PREPROCESSED_DIR
 
@@ -474,7 +574,7 @@ def extract_landmarks(**context):
     """Extract MediaPipe landmarks from videos"""
 
     new_uploads = context["task_instance"].xcom_pull(
-        task_ids="bronze_ingest_raw_videos", key="new_uploads"
+        task_ids="bronze_collect_unprocessed_inputs", key="new_uploads"
     ) or []
     if not new_uploads:
         print("ℹ️ No new uploaded videos to extract landmarks. Skipping extraction step.")
@@ -536,16 +636,13 @@ def extract_landmarks(**context):
 
 def store_to_minio(**context):
     """Upload Silver preprocessed videos and Gold landmarks to MinIO and create manifest"""
-    # Keep only one Gold task in DAG: this task performs both extraction and publish.
-    extract_landmarks(**context)
-
     landmarks_dir = context["task_instance"].xcom_pull(
         task_ids="gold_extract_landmarks", key="landmarks_dir"
     )
-    run_id = context["task_instance"].xcom_pull(task_ids="bronze_ingest_raw_videos", key="run_id")
-    run_month = context["task_instance"].xcom_pull(task_ids="bronze_ingest_raw_videos", key="run_month")
-    run_stamp = context["task_instance"].xcom_pull(task_ids="bronze_ingest_raw_videos", key="run_stamp")
-    run_dir = context["task_instance"].xcom_pull(task_ids="bronze_ingest_raw_videos", key="run_dir")
+    run_id = context["task_instance"].xcom_pull(task_ids="bronze_prepare_run_context", key="run_id")
+    run_month = context["task_instance"].xcom_pull(task_ids="bronze_prepare_run_context", key="run_month")
+    run_stamp = context["task_instance"].xcom_pull(task_ids="bronze_prepare_run_context", key="run_stamp")
+    run_dir = context["task_instance"].xcom_pull(task_ids="bronze_prepare_run_context", key="run_dir")
     if not run_id or not run_month or not run_stamp or not run_dir:
         run_ctx = _ensure_run_context(context["task_instance"])
         run_id = run_ctx["run_id"]
@@ -554,7 +651,7 @@ def store_to_minio(**context):
         run_dir = run_ctx["run_dir"]
     preprocessed_dir = LOCAL_PREPROCESSED_DIR
     new_uploads = context["task_instance"].xcom_pull(
-        task_ids="bronze_ingest_raw_videos", key="new_uploads"
+        task_ids="bronze_collect_unprocessed_inputs", key="new_uploads"
     ) or []
 
     video_exts = VIDEO_EXTENSIONS
@@ -780,43 +877,13 @@ def store_to_minio(**context):
         gold_rows_file,
     ]
 
-    def _is_missing_iceberg_metadata(result: subprocess.CompletedProcess) -> bool:
-        merged = f"{result.stdout}\n{result.stderr}"
-        return "FileNotFoundException" in merged and "/metadata/" in merged
-
-    def _repair_catalog_entry(table_name: str) -> None:
-        pg_user = os.environ.get("POSTGRES_USER", "postgres")
-        pg_password = os.environ.get("POSTGRES_PASSWORD", "postgres")
-        pg_host = os.environ.get("ICEBERG_POSTGRES_HOST", "postgres")
-        pg_port = int(os.environ.get("ICEBERG_POSTGRES_PORT", "5432"))
-        pg_db = os.environ.get("ICEBERG_POSTGRES_DB", "iceberg")
-
-        conn = psycopg2.connect(
-            host=pg_host,
-            port=pg_port,
-            dbname=pg_db,
-            user=pg_user,
-            password=pg_password,
-        )
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "DELETE FROM iceberg_tables WHERE table_name = %s",
-                    (table_name,),
-                )
-                deleted = cur.rowcount
-            conn.commit()
-            print(f"⚠️ Repaired stale Iceberg catalog pointer for {namespace}.{table_name} (deleted_rows={deleted})")
-        finally:
-            conn.close()
-
     def _append_with_repair(cmd: list[str], table_name: str) -> subprocess.CompletedProcess:
         result = subprocess.run(cmd, capture_output=True, text=True, cwd=PROJECT_ROOT)
         if result.returncode == 0:
             return result
 
-        if _is_missing_iceberg_metadata(result):
-            _repair_catalog_entry(table_name)
+        if _is_missing_iceberg_metadata_output(result.stdout or "", result.stderr or ""):
+            _repair_catalog_entry(namespace, table_name)
             retry_result = subprocess.run(cmd, capture_output=True, text=True, cwd=PROJECT_ROOT)
             if retry_result.returncode == 0:
                 print(f"✅ Spark append recovered after catalog repair for {namespace}.{table_name}")
@@ -883,6 +950,7 @@ def store_to_minio(**context):
     # Cleanup transient staging dirs after successful publish.
     shutil.rmtree(PREPROCESS_INPUT_STAGING_DIR, ignore_errors=True)
 
+
 # ================================================================
 # DAG Definition
 # ================================================================
@@ -893,22 +961,56 @@ with DAG(
     description="Bronze raw videos -> Silver preprocessed videos -> Gold landmarks",
     schedule_interval=None,  # Manual trigger
     catchup=False,
+    on_failure_callback=task_failure_email_alert,
     tags=["preprocessing", "sign-language"],
 ) as dag:
-    bronze_ingest = PythonOperator(
-        task_id="bronze_ingest_raw_videos",
-        python_callable=bronze_prepare_inputs,
+    start = EmptyOperator(
+        task_id="start",
+        doc_md="Start node for preprocessing pipeline run.",
+    )
+    end = EmptyOperator(
+        task_id="end",
+        doc_md="End node for preprocessing pipeline run.",
     )
 
-    silver_preprocess = PythonOperator(
-        task_id="silver_preprocess_videos",
-        python_callable=preprocess_videos,
-    )
+    with TaskGroup(group_id="bronze", prefix_group_id=False) as bronze_group:
+        bronze_prepare_context = PythonOperator(
+            task_id="bronze_prepare_run_context",
+            python_callable=prepare_run_context,
+            doc_md="Prepare shared run metadata for all downstream stages.",
+        )
+        bronze_ingest_local = PythonOperator(
+            task_id="bronze_ingest_local_raw",
+            python_callable=ingest_local_raw_to_bronze,
+            doc_md="Ingest local raw dataset snapshot into Bronze storage.",
+        )
+        bronze_sync_pending = PythonOperator(
+            task_id="bronze_collect_unprocessed_inputs",
+            python_callable=sync_pending_bronze_inputs,
+            doc_md="Collect only unprocessed Bronze inputs using Iceberg checkpoint.",
+        )
 
-    gold_publish = PythonOperator(
-        task_id="gold_extract_landmarks",
-        python_callable=store_to_minio,
-    )
-    
-    # Task dependencies
-    bronze_ingest >> silver_preprocess >> gold_publish
+        bronze_prepare_context >> bronze_ingest_local >> bronze_sync_pending
+
+    with TaskGroup(group_id="silver", prefix_group_id=False) as silver_group:
+        silver_preprocess = PythonOperator(
+            task_id="silver_preprocess_videos",
+            python_callable=preprocess_videos,
+            doc_md="Normalize and segment videos for Silver stage outputs.",
+        )
+
+    with TaskGroup(group_id="gold", prefix_group_id=False) as gold_group:
+        gold_extract = PythonOperator(
+            task_id="gold_extract_landmarks",
+            python_callable=extract_landmarks,
+            doc_md="Extract landmark arrays from preprocessed Silver videos.",
+        )
+        gold_publish = PythonOperator(
+            task_id="gold_merge_snapshot",
+            python_callable=store_to_minio,
+            doc_md="Merge new landmarks into Gold snapshot and append Iceberg inventory.",
+        )
+
+        gold_extract >> gold_publish
+
+    start >> bronze_group >> silver_group >> gold_group >> end
