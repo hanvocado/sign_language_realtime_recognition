@@ -63,7 +63,7 @@ MIN_VOTES_FOR_RESULT = 3  # Increased from 2 to 3 - need stronger consensus (75%
 # Upload pipeline config
 MINIO_BUCKET = os.environ.get("MINIO_BUCKET", "data")
 MINIO_UPLOAD_PREFIX = os.environ.get(
-    "MINIO_UPLOAD_PREFIX", "lakehouse/bronze/user_upload"
+    "MINIO_UPLOAD_PREFIX", "lakehouse/bronze/wlasl/videos/user_uploads"
 ).strip("/")
 MAX_UPLOAD_FILES = int(os.environ.get("MAX_UPLOAD_FILES", "30"))
 ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".webm"}
@@ -156,9 +156,9 @@ def init_minio_client():
     access_key = os.environ.get("MINIO_ACCESS_KEY") or os.environ.get("AWS_ACCESS_KEY_ID", "minioadmin")
     secret_key = os.environ.get("MINIO_SECRET_KEY") or os.environ.get("AWS_SECRET_ACCESS_KEY", "minioadmin")
 
-    secure_env = os.environ.get("MINIO_SECURE")
-    if secure_env is not None:
-        secure = secure_env.strip().lower() in ("1", "true", "yes", "on")
+    minio_secure_env = os.environ.get("MINIO_SECURE")
+    if minio_secure_env is not None:
+        secure = minio_secure_env.lower() in ("1", "true", "yes")
     else:
         secure = raw_endpoint.startswith("https://")
 
@@ -173,7 +173,7 @@ def init_minio_client():
         minio_client.make_bucket(MINIO_BUCKET)
 
     logger.info(
-        f"✅ MinIO ready (bucket={MINIO_BUCKET}, prefix={MINIO_UPLOAD_PREFIX}, endpoint={endpoint}, secure={secure})"
+        f"✅ MinIO ready (bucket={MINIO_BUCKET}, prefix={MINIO_UPLOAD_PREFIX}, endpoint={endpoint})"
     )
 
 
@@ -446,14 +446,13 @@ def upload_videos():
             continue
 
         try:
-            stream = file_storage.stream
-            stream.seek(0, 2)
-            size = stream.tell()
-            stream.seek(0)
+            file_storage.stream.seek(0, 2)
+            size = file_storage.stream.tell()
             if size == 0:
                 failed.append({'file': original_name, 'reason': 'Empty file'})
                 continue
 
+            file_storage.stream.seek(0)
             object_name = (
                 f"{MINIO_UPLOAD_PREFIX}/{upload_month}/{upload_day}/{label_folder}/"
                 f"{int(time.time() * 1000)}_{safe_name}"
@@ -569,7 +568,7 @@ def handle_reset():
 
 def initialize_app():
     """Initialize app"""
-    global model, label_list, holistic
+    global model, label_list, holistic, minio_client
     
     logger.info("=" * 70)
     logger.info("WEBAPP STARTING - Vietnamese Sign Language Recognition")
@@ -594,6 +593,7 @@ def initialize_app():
         init_minio_client()
     except Exception as exc:
         logger.warning(f"⚠️ MinIO unavailable at startup (uploads disabled): {exc}")
+        minio_client = None
     
     # Initialize MediaPipe (shared instance)
     holistic = mp_holistic.Holistic(
@@ -616,10 +616,11 @@ def initialize_app():
 if __name__ == '__main__':
     initialize_app()
     dev_mode = os.environ.get("FLASK_DEV", "false").lower() == "true"
+    allow_unsafe_werkzeug = os.environ.get("ALLOW_UNSAFE_WERKZEUG", str(dev_mode).lower()).lower() == "true"
     socketio.run(
         app,
         host='0.0.0.0',
         port=5000,
         debug=dev_mode,
-        allow_unsafe_werkzeug=dev_mode,
+        allow_unsafe_werkzeug=allow_unsafe_werkzeug,
     )

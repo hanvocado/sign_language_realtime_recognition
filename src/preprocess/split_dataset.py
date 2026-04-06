@@ -24,6 +24,7 @@ from pathlib import Path
 from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 from src.utils.logger import *
+from src.config.config import NPY_DIR, SPLIT_DIR
 
 # Supported file extensions
 VIDEO_EXTENSIONS = ('.mp4', '.avi', '.mov', '.mkv', '.webm')
@@ -326,9 +327,9 @@ if __name__ == "__main__":
         description="Split dataset and organize files into train/val/test folders.",
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    p.add_argument("--data_dir", default="data/raw", 
+    p.add_argument("--data_dir", default=NPY_DIR, 
                    help="Directory containing videos/npy files")
-    p.add_argument("--output_dir", default="data/split", 
+    p.add_argument("--output_dir", default=SPLIT_DIR, 
                    help="Output split dataset directory")
     p.add_argument("--json", default=None, 
                    help="JSON mapping path (required for flat mode)")

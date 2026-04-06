@@ -36,38 +36,22 @@ class ModelConfig:
                 
                 model_path = manifest.get('model_path', str(cls.MODEL_PATH))
                 
-                # Resolve relative paths for model_path
+                # Resolve relative paths
                 if not Path(model_path).is_absolute():
                     model_path = PROJECT_ROOT / model_path
                 model_path = Path(model_path)
 
-                if not model_path.exists():
-                    logger.warning(
-                        f"⚠️ production.json references missing model file: {model_path}. "
-                        "Falling back to default checkpoint."
-                    )
-                    return {
-                        'model_path': cls.MODEL_PATH,
-                        'label_map_path': cls.LABEL_MAP_PATH,
-                        'production': False,
-                    }
-
-                # Determine label_map_path:
-                # 1) from manifest if provided
-                # 2) from the model directory (model_path.parent / 'label_map.json') if it exists
-                # 3) fall back to the default LABEL_MAP_PATH
-                label_map_path = manifest.get('label_map_path')
-                if label_map_path and str(label_map_path).strip():
-                    if not Path(label_map_path).is_absolute():
+                # Honor label_map_path from manifest; derive from model dir as fallback
+                raw_label_map = manifest.get('label_map_path')
+                if raw_label_map:
+                    label_map_path = Path(raw_label_map)
+                    if not label_map_path.is_absolute():
                         label_map_path = PROJECT_ROOT / label_map_path
-                    label_map_path = Path(label_map_path)
                 else:
-                    candidate_label_map = model_path.parent / 'label_map.json'
-                    if candidate_label_map.exists():
-                        label_map_path = candidate_label_map
-                    else:
+                    label_map_path = model_path.parent / 'label_map.json'
+                    if not label_map_path.exists():
                         label_map_path = cls.LABEL_MAP_PATH
-
+                
                 return {
                     'model_path': model_path,
                     'label_map_path': label_map_path,

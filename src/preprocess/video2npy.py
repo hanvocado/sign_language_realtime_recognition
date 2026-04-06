@@ -15,7 +15,7 @@ Supports any directory structure:
 import os, cv2, numpy as np, argparse
 from pathlib import Path
 import mediapipe as mp
-from src.config.config import SEQ_LEN
+from src.config.config import SEQ_LEN, PREPROCESSED_DIR, NPY_DIR
 from src.utils.logger import *
 from src.utils.common_functions import *
 
@@ -219,18 +219,18 @@ Directory Structure Support:
 
 Examples:
   # Basic usage
-  python -m src.preprocess.video2npy --input_dir data/raw --output_dir data/npy
+    python -m src.preprocess.video2npy --input_dir data/wlasl/videos/preprocessed --output_dir data/wlasl/npy/25
 
   # With custom sequence length
-  python -m src.preprocess.video2npy --input_dir data/raw --output_dir data/npy --seq_len 30
+    python -m src.preprocess.video2npy --input_dir data/wlasl/videos/preprocessed --output_dir data/wlasl/npy/30 --seq_len 30
 
   # Skip already converted files
-  python -m src.preprocess.video2npy --input_dir data/raw --output_dir data/npy --skip_existing
+    python -m src.preprocess.video2npy --input_dir data/wlasl/videos/preprocessed --output_dir data/wlasl/npy/25 --skip_existing
         """
     )
-    parser.add_argument("--input_dir", default="data/raw", 
+    parser.add_argument("--input_dir", default=PREPROCESSED_DIR, 
                         help="Input directory containing videos (any structure)")
-    parser.add_argument("--output_dir", default="data/npy", 
+    parser.add_argument("--output_dir", default=NPY_DIR, 
                         help="Output directory for .npy files (structure preserved)")
     parser.add_argument("--seq_len", type=int, default=SEQ_LEN, 
                         help=f"Sequence length (default: {SEQ_LEN})")

@@ -20,6 +20,7 @@ from pathlib import Path
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.exceptions import AirflowException
+from src.config.config import DATASET_NAME, SEQ_LEN
 
 # MLflow
 import mlflow
@@ -37,7 +38,6 @@ AWS_ACCESS_KEY = os.environ.get("AWS_ACCESS_KEY_ID", "minioadmin")
 AWS_SECRET_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY", "minioadmin")
 MINIO_S3_ENDPOINT = os.environ.get("MLFLOW_S3_ENDPOINT_URL", "http://minio:9000")
 PROJECT_ROOT = os.environ.get("PYTHONPATH", "/opt/airflow/project")
-DATASET_VERSION = os.environ.get("DATASET_VERSION", "v1").strip("/")
 ICEBERG_LANDMARKS_TABLE = os.environ.get("ICEBERG_GOLD_TRAINING_TABLE", "gold_training_landmarks_inventory")
 
 MINIO_ENDPOINT = os.environ.get("MINIO_ENDPOINT", "minio:9000")
@@ -53,8 +53,15 @@ minio_client = Minio(
     secure=False,
 )
 
-# MLflow tracking URI (set lazily inside tasks to avoid import-time network calls)
+# Set MLflow tracking URI
 MLFLOW_EXPERIMENT = os.environ.get("MLFLOW_EXPERIMENT", "sign_language_training")
+
+
+def configure_mlflow():
+    """Configure MLflow at task runtime to avoid import-time network calls."""
+    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+    mlflow.set_experiment(MLFLOW_EXPERIMENT)
+
 
 # Default Airflow arguments
 default_args = {
@@ -164,7 +171,7 @@ def read_landmarks(**context):
             iceberg_rows = []
 
     if not minio_prefix and not iceberg_rows:
-        manifest_path = f"{PROJECT_ROOT}/data/preprocessing_manifest.json"
+        manifest_path = f"{PROJECT_ROOT}/data/{DATASET_NAME}/preprocessing_manifest.json"
         if not os.path.exists(manifest_path):
             raise AirflowException(
                 "No preprocessing manifest found and no minio_prefix provided in DAG config"
@@ -173,7 +180,11 @@ def read_landmarks(**context):
             manifest = json.load(f)
         run_id = run_id or manifest.get("run_id")
         minio_bucket = manifest.get("minio_bucket", minio_bucket)
-        minio_prefix = manifest.get("gold_minio_prefix") or manifest.get("minio_prefix")
+        minio_prefix = (
+            manifest.get("gold_landmarks_prefix")
+            or manifest.get("gold_minio_prefix")
+            or manifest.get("minio_prefix")
+        )
 
     if not minio_prefix and not iceberg_rows:
         raise AirflowException("Unable to resolve landmarks prefix from DAG config or manifest")
@@ -199,6 +210,10 @@ def read_landmarks(**context):
                 # landmarks/<run_id>/<label>/<file>.npy
                 rel_path = object_name.split("/", 2)[-1]
 
+            rel_parts = [p for p in rel_path.split("/") if p]
+            if len(rel_parts) >= 4:
+                rel_path = "/".join(rel_parts[-2:])
+
             local_path = os.path.join(raw_landmarks_dir, rel_path)
             os.makedirs(os.path.dirname(local_path), exist_ok=True)
             minio_client.fget_object(minio_bucket, object_name, local_path)
@@ -210,6 +225,9 @@ def read_landmarks(**context):
                 continue
 
             rel_path = obj.object_name[len(minio_prefix):].lstrip("/")
+            rel_parts = [p for p in rel_path.split("/") if p]
+            if len(rel_parts) >= 4:
+                rel_path = "/".join(rel_parts[-2:])
             local_path = os.path.join(raw_landmarks_dir, rel_path)
             os.makedirs(os.path.dirname(local_path), exist_ok=True)
             minio_client.fget_object(minio_bucket, obj.object_name, local_path)
@@ -383,11 +401,8 @@ def evaluate_model(**context):
 def log_to_mlflow(**context):
     """Log model and metrics to MLflow"""
     import subprocess
-
-    # Configure MLflow inside the task to avoid import-time network calls
-    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
-    mlflow.set_experiment(MLFLOW_EXPERIMENT)
-
+    configure_mlflow()
+    
     run_dir = context["task_instance"].xcom_pull(task_ids="prepare_training_run", key="run_dir")
     model_path = context["task_instance"].xcom_pull(task_ids="train_model", key="model_path")
     eval_results = context["task_instance"].xcom_pull(task_ids="evaluate_model", key="eval_results") or {}
@@ -406,13 +421,15 @@ def log_to_mlflow(**context):
             "normalization_config": json.dumps(normalization_config, ensure_ascii=False),
             "dataset_bucket": minio_bucket,
             "dataset_prefix": minio_prefix,
-            "dataset_version": DATASET_VERSION,
+            "dataset_name": DATASET_NAME,
+            "seq_len": SEQ_LEN,
             "iceberg_gold_training_table": ICEBERG_LANDMARKS_TABLE,
         })
         mlflow.set_tags(
             {
                 "medallion_layer": "gold",
-                "dataset_version": DATASET_VERSION,
+                "dataset_name": DATASET_NAME,
+                "seq_len": str(SEQ_LEN),
                 "data_source": "gold_training_landmarks",
             }
         )
@@ -423,21 +440,25 @@ def log_to_mlflow(**context):
                 mlflow.log_metric(metric_name, metric_value)
         
         # Log model artifact
-        mlflow.log_artifact(model_path, artifact_path=f"gold/models/{DATASET_VERSION}")
+        mlflow_artifact_path = f"gold/models/{DATASET_NAME}/seq_{SEQ_LEN}"
+        mlflow.log_artifact(model_path, artifact_path=mlflow_artifact_path)
         
         # Log evaluation results
         eval_file = f"{run_dir}/evaluation_results.json"
         if os.path.exists(eval_file):
-            mlflow.log_artifact(eval_file, artifact_path=f"gold/evaluation/{DATASET_VERSION}")
+            mlflow.log_artifact(eval_file, artifact_path=f"gold/evaluation/{DATASET_NAME}/seq_{SEQ_LEN}")
         
         mlflow_run_id = run.info.run_id
     
     print(f"✅ Model logged to MLflow (Run ID: {mlflow_run_id})")
     context["task_instance"].xcom_push(key="mlflow_run_id", value=mlflow_run_id)
+    context["task_instance"].xcom_push(key="mlflow_artifact_path", value=mlflow_artifact_path)
 
 def register_model(**context):
     """Register model in MLflow registry (Production stage)"""
+    configure_mlflow()
     mlflow_run_id = context["task_instance"].xcom_pull(task_ids="log_to_mlflow", key="mlflow_run_id")
+    mlflow_artifact_path = context["task_instance"].xcom_pull(task_ids="log_to_mlflow", key="mlflow_artifact_path")
     eval_results = context["task_instance"].xcom_pull(task_ids="evaluate_model", key="eval_results") or {}
     
     # Quality gate: check minimum accuracy
@@ -468,7 +489,7 @@ def register_model(**context):
 
         model_version = client.create_model_version(
             name=model_name,
-            source=f"runs:/{mlflow_run_id}/gold/models/{DATASET_VERSION}",
+            source=f"runs:/{mlflow_run_id}/{mlflow_artifact_path}",
             run_id=mlflow_run_id,
         )
         
@@ -501,13 +522,9 @@ def update_production_manifest(**context):
     # Convert absolute paths to paths relative to PROJECT_ROOT so the
     # manifest is portable across containers (Airflow vs. webapp).
     project_root = Path(PROJECT_ROOT)
-    label_map_path = Path(run_dir) / "label_map.json"
-    if not label_map_path.exists():
-        print(f"⚠️ label_map.json not found in run_dir: {label_map_path}")
     try:
         rel_model_path = Path(model_path).relative_to(project_root)
         rel_run_dir = Path(run_dir).relative_to(project_root)
-        rel_label_map_path = label_map_path.relative_to(project_root)
     except ValueError:
         # Paths are not under PROJECT_ROOT; store as-is (non-portable across containers)
         import warnings
@@ -518,11 +535,9 @@ def update_production_manifest(**context):
         )
         rel_model_path = model_path
         rel_run_dir = run_dir
-        rel_label_map_path = str(label_map_path)
 
     manifest = {
         "model_path": str(rel_model_path),
-        "label_map_path": str(rel_label_map_path),
         "run_dir": str(rel_run_dir),
         "mlflow_run_id": mlflow_run_id,
         "mlflow_tracking_uri": MLFLOW_TRACKING_URI,

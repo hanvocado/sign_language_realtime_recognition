@@ -158,6 +158,15 @@ services:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW__WEBSERVER__SECRET_KEY:-airflow-shared-dev-secret-key}
+      AIRFLOW__EMAIL__EMAIL_BACKEND: airflow.utils.email.send_email_smtp
+      AIRFLOW__SMTP__SMTP_HOST: ${AIRFLOW__SMTP__SMTP_HOST:-smtp.gmail.com}
+      AIRFLOW__SMTP__SMTP_PORT: ${AIRFLOW__SMTP__SMTP_PORT:-587}
+      AIRFLOW__SMTP__SMTP_STARTTLS: ${AIRFLOW__SMTP__SMTP_STARTTLS:-True}
+      AIRFLOW__SMTP__SMTP_SSL: ${AIRFLOW__SMTP__SMTP_SSL:-False}
+      AIRFLOW__SMTP__SMTP_USER: ${AIRFLOW__SMTP__SMTP_USER:-}
+      AIRFLOW__SMTP__SMTP_PASSWORD: ${AIRFLOW__SMTP__SMTP_PASSWORD:-}
+      AIRFLOW__SMTP__SMTP_MAIL_FROM: ${AIRFLOW__SMTP__SMTP_MAIL_FROM:-no-reply@example.com}
+      AIRFLOW_ALERT_EMAIL_TO: ${AIRFLOW_ALERT_EMAIL_TO:-}
       # MLflow
       MLFLOW_TRACKING_URI: http://mlflow:5000
       MLFLOW_S3_ENDPOINT_URL: http://minio:9000
@@ -175,16 +184,15 @@ services:
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin
-      DATASET_VERSION: v1
-      MINIO_BRONZE_ROOT_PREFIX: lakehouse/bronze
-      MINIO_UPLOAD_PREFIX: lakehouse/bronze/user_upload
-      MINIO_BRONZE_LOCAL_PREFIX: lakehouse/bronze/local_dataset
-      MINIO_LOCAL_DATASET_PREFIX: lakehouse/silver/preprocessed/v1/raw_videos
-      MINIO_LANDMARKS_PREFIX: lakehouse/silver/preprocessed/v1/landmarks
-      MINIO_GOLD_TRAINING_PREFIX: lakehouse/gold/training_dataset
+      DATASET_NAME: wlasl
+      SEQ_LEN: 25
+      MINIO_BRONZE_RAW_PREFIX: lakehouse/bronze/wlasl/videos/raw
+      MINIO_USER_UPLOAD_PREFIX: lakehouse/bronze/wlasl/videos/user_uploads
+      MINIO_UPLOAD_PREFIX: lakehouse/bronze/wlasl/videos/user_uploads
+      MINIO_SILVER_PREFIX: lakehouse/silver/wlasl/videos/preprocessed
+      MINIO_GOLD_ROOT_PREFIX: lakehouse/gold/wlasl/npy/25
       ICEBERG_BRONZE_TABLE: bronze_user_upload_inventory
       ICEBERG_SILVER_RAW_TABLE: silver_raw_inventory
-      ICEBERG_SILVER_LANDMARKS_TABLE: silver_landmarks_inventory
       ICEBERG_GOLD_TRAINING_TABLE: gold_training_landmarks_inventory
       PYTHONPATH: /opt/airflow/project
     volumes:
@@ -217,6 +225,15 @@ services:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW__WEBSERVER__SECRET_KEY:-airflow-shared-dev-secret-key}
+      AIRFLOW__EMAIL__EMAIL_BACKEND: airflow.utils.email.send_email_smtp
+      AIRFLOW__SMTP__SMTP_HOST: ${AIRFLOW__SMTP__SMTP_HOST:-smtp.gmail.com}
+      AIRFLOW__SMTP__SMTP_PORT: ${AIRFLOW__SMTP__SMTP_PORT:-587}
+      AIRFLOW__SMTP__SMTP_STARTTLS: ${AIRFLOW__SMTP__SMTP_STARTTLS:-True}
+      AIRFLOW__SMTP__SMTP_SSL: ${AIRFLOW__SMTP__SMTP_SSL:-False}
+      AIRFLOW__SMTP__SMTP_USER: ${AIRFLOW__SMTP__SMTP_USER:-}
+      AIRFLOW__SMTP__SMTP_PASSWORD: ${AIRFLOW__SMTP__SMTP_PASSWORD:-}
+      AIRFLOW__SMTP__SMTP_MAIL_FROM: ${AIRFLOW__SMTP__SMTP_MAIL_FROM:-no-reply@example.com}
+      AIRFLOW_ALERT_EMAIL_TO: ${AIRFLOW_ALERT_EMAIL_TO:-}
       # MLflow
       MLFLOW_TRACKING_URI: http://mlflow:5000
       MLFLOW_S3_ENDPOINT_URL: http://minio:9000
@@ -234,16 +251,15 @@ services:
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin
-      DATASET_VERSION: v1
-      MINIO_BRONZE_ROOT_PREFIX: lakehouse/bronze
-      MINIO_UPLOAD_PREFIX: lakehouse/bronze/user_upload
-      MINIO_BRONZE_LOCAL_PREFIX: lakehouse/bronze/local_dataset
-      MINIO_LOCAL_DATASET_PREFIX: lakehouse/silver/preprocessed/v1/raw_videos
-      MINIO_LANDMARKS_PREFIX: lakehouse/silver/preprocessed/v1/landmarks
-      MINIO_GOLD_TRAINING_PREFIX: lakehouse/gold/training_dataset
+      DATASET_NAME: wlasl
+      SEQ_LEN: 25
+      MINIO_BRONZE_RAW_PREFIX: lakehouse/bronze/wlasl/videos/raw
+      MINIO_USER_UPLOAD_PREFIX: lakehouse/bronze/wlasl/videos/user_uploads
+      MINIO_UPLOAD_PREFIX: lakehouse/bronze/wlasl/videos/user_uploads
+      MINIO_SILVER_PREFIX: lakehouse/silver/wlasl/videos/preprocessed
+      MINIO_GOLD_ROOT_PREFIX: lakehouse/gold/wlasl/npy/25
       ICEBERG_BRONZE_TABLE: bronze_user_upload_inventory
       ICEBERG_SILVER_RAW_TABLE: silver_raw_inventory
-      ICEBERG_SILVER_LANDMARKS_TABLE: silver_landmarks_inventory
       ICEBERG_GOLD_TRAINING_TABLE: gold_training_landmarks_inventory
       PYTHONPATH: /opt/airflow/project
     volumes:
@@ -275,7 +291,8 @@ services:
     environment:
       PYTHONPATH: /app
       MINIO_ENDPOINT: http://minio:9000
-      MINIO_UPLOAD_PREFIX: lakehouse/bronze/user_upload
+      DATASET_NAME: wlasl
+      MINIO_UPLOAD_PREFIX: lakehouse/bronze/wlasl/videos/user_uploads
       MLFLOW_TRACKING_URI: http://mlflow:5000
     volumes:
       - ./src:/app/src
