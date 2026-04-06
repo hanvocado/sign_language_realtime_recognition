@@ -368,8 +368,8 @@ def _ensure_run_context(ti) -> dict:
         }
 
     raise RuntimeError(
-        f"Run context not found in XCom (task_ids='{CONTEXT_TASK_ID}'). "
-        "Ensure bronze_prepare_run_context has run successfully before calling this helper."
+        f"Run context not found in XCom (task_ids={CONTEXT_TASK_ID!r}). "
+        f"Ensure {CONTEXT_TASK_ID} has run successfully before calling this helper."
     )
 
 
