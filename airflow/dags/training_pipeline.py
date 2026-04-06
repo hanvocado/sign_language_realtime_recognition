@@ -54,9 +54,14 @@ minio_client = Minio(
 )
 
 # Set MLflow tracking URI
-mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
 MLFLOW_EXPERIMENT = os.environ.get("MLFLOW_EXPERIMENT", "sign_language_training")
-mlflow.set_experiment(MLFLOW_EXPERIMENT)
+
+
+def configure_mlflow():
+    """Configure MLflow at task runtime to avoid import-time network calls."""
+    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+    mlflow.set_experiment(MLFLOW_EXPERIMENT)
+
 
 # Default Airflow arguments
 default_args = {
@@ -396,6 +401,7 @@ def evaluate_model(**context):
 def log_to_mlflow(**context):
     """Log model and metrics to MLflow"""
     import subprocess
+    configure_mlflow()
     
     run_dir = context["task_instance"].xcom_pull(task_ids="prepare_training_run", key="run_dir")
     model_path = context["task_instance"].xcom_pull(task_ids="train_model", key="model_path")
@@ -434,7 +440,8 @@ def log_to_mlflow(**context):
                 mlflow.log_metric(metric_name, metric_value)
         
         # Log model artifact
-        mlflow.log_artifact(model_path, artifact_path=f"gold/models/{DATASET_NAME}/seq_{SEQ_LEN}")
+        mlflow_artifact_path = f"gold/models/{DATASET_NAME}/seq_{SEQ_LEN}"
+        mlflow.log_artifact(model_path, artifact_path=mlflow_artifact_path)
         
         # Log evaluation results
         eval_file = f"{run_dir}/evaluation_results.json"
@@ -445,10 +452,13 @@ def log_to_mlflow(**context):
     
     print(f"✅ Model logged to MLflow (Run ID: {mlflow_run_id})")
     context["task_instance"].xcom_push(key="mlflow_run_id", value=mlflow_run_id)
+    context["task_instance"].xcom_push(key="mlflow_artifact_path", value=mlflow_artifact_path)
 
 def register_model(**context):
     """Register model in MLflow registry (Production stage)"""
+    configure_mlflow()
     mlflow_run_id = context["task_instance"].xcom_pull(task_ids="log_to_mlflow", key="mlflow_run_id")
+    mlflow_artifact_path = context["task_instance"].xcom_pull(task_ids="log_to_mlflow", key="mlflow_artifact_path")
     eval_results = context["task_instance"].xcom_pull(task_ids="evaluate_model", key="eval_results") or {}
     
     # Quality gate: check minimum accuracy
@@ -479,7 +489,7 @@ def register_model(**context):
 
         model_version = client.create_model_version(
             name=model_name,
-            source=f"runs:/{mlflow_run_id}/models",
+            source=f"runs:/{mlflow_run_id}/{mlflow_artifact_path}",
             run_id=mlflow_run_id,
         )
         

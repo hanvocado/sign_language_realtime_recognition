@@ -352,11 +352,12 @@ def _save_gold_state(state: dict) -> None:
         json.dump(state, f, ensure_ascii=False, indent=2)
 
 def _ensure_run_context(ti) -> dict:
-    """Ensure run context exists in XCom and return it."""
-    run_dir = ti.xcom_pull(key="run_dir")
-    run_id = ti.xcom_pull(key="run_id")
-    run_month = ti.xcom_pull(key="run_month")
-    run_stamp = ti.xcom_pull(key="run_stamp")
+    """Return run context from the bronze_prepare_run_context task's XCom (read-only)."""
+    CONTEXT_TASK_ID = "bronze_prepare_run_context"
+    run_dir = ti.xcom_pull(task_ids=CONTEXT_TASK_ID, key="run_dir")
+    run_id = ti.xcom_pull(task_ids=CONTEXT_TASK_ID, key="run_id")
+    run_month = ti.xcom_pull(task_ids=CONTEXT_TASK_ID, key="run_month")
+    run_stamp = ti.xcom_pull(task_ids=CONTEXT_TASK_ID, key="run_stamp")
 
     if run_dir and run_id and run_month and run_stamp:
         return {
@@ -366,25 +367,10 @@ def _ensure_run_context(ti) -> dict:
             "run_stamp": run_stamp,
         }
 
-    now = datetime.now()
-    run_id = now.strftime("%Y%m%d_%H%M%S")
-    run_month = now.strftime("%Y%m")
-    run_stamp = now.strftime("%Y%m%dT%H%M%S")
-    run_dir = f"{PROJECT_ROOT}/data/runs/preprocess_{run_id}"
-    os.makedirs(run_dir, exist_ok=True)
-
-    ti.xcom_push(key="run_dir", value=run_dir)
-    ti.xcom_push(key="run_id", value=run_id)
-    ti.xcom_push(key="run_month", value=run_month)
-    ti.xcom_push(key="run_stamp", value=run_stamp)
-    print(f"✅ Internal run context prepared: run_id={run_id}, run_dir={run_dir}")
-
-    return {
-        "run_dir": run_dir,
-        "run_id": run_id,
-        "run_month": run_month,
-        "run_stamp": run_stamp,
-    }
+    raise RuntimeError(
+        f"Run context not found in XCom (task_ids='{CONTEXT_TASK_ID}'). "
+        "Ensure bronze_prepare_run_context has run successfully before calling this helper."
+    )
 
 
 def prepare_run_context(**context):
@@ -915,7 +901,6 @@ def store_to_minio(**context):
         "seq_len": SEQ_LEN,
         "local_raw_dir": LOCAL_RAW_SOURCE_DIR,
         "local_preprocessed_dir": preprocessed_dir,
-        "minio_raw_prefix": f"{MINIO_BRONZE_RAW_PREFIX}/{run_month}/{run_stamp}",
         "minio_preprocessed_prefix": f"{MINIO_SILVER_PREFIX}/{run_month}/{run_stamp}",
         "raw_files_count": uploaded_raw_files,
         "local_landmarks_dir": landmarks_dir,

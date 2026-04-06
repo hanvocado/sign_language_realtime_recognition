@@ -151,15 +151,22 @@ def _allowed_video(filename: str) -> bool:
 def init_minio_client():
     global minio_client
 
-    endpoint = _normalize_minio_endpoint(os.environ.get("MINIO_ENDPOINT", "minio:9000"))
+    raw_endpoint = os.environ.get("MINIO_ENDPOINT", "minio:9000")
+    endpoint = _normalize_minio_endpoint(raw_endpoint)
     access_key = os.environ.get("MINIO_ACCESS_KEY") or os.environ.get("AWS_ACCESS_KEY_ID", "minioadmin")
     secret_key = os.environ.get("MINIO_SECRET_KEY") or os.environ.get("AWS_SECRET_ACCESS_KEY", "minioadmin")
+
+    minio_secure_env = os.environ.get("MINIO_SECURE")
+    if minio_secure_env is not None:
+        secure = minio_secure_env.lower() in ("1", "true", "yes")
+    else:
+        secure = raw_endpoint.startswith("https://")
 
     minio_client = Minio(
         endpoint,
         access_key=access_key,
         secret_key=secret_key,
-        secure=False,
+        secure=secure,
     )
 
     if not minio_client.bucket_exists(MINIO_BUCKET):
@@ -439,9 +446,8 @@ def upload_videos():
             continue
 
         try:
-            file_storage.stream.seek(0)
-            payload = file_storage.read()
-            size = len(payload)
+            file_storage.stream.seek(0, 2)
+            size = file_storage.stream.tell()
             if size == 0:
                 failed.append({'file': original_name, 'reason': 'Empty file'})
                 continue
@@ -583,7 +589,11 @@ def initialize_app():
     model, label_list = load_model_and_weights(model_path, label_map_path)
 
     # Initialize MinIO upload client for user videos
-    init_minio_client()
+    try:
+        init_minio_client()
+    except Exception as exc:
+        logger.warning(f"⚠️ MinIO unavailable at startup (uploads disabled): {exc}")
+        minio_client = None
     
     # Initialize MediaPipe (shared instance)
     holistic = mp_holistic.Holistic(
@@ -606,7 +616,7 @@ def initialize_app():
 if __name__ == '__main__':
     initialize_app()
     dev_mode = os.environ.get("FLASK_DEV", "false").lower() == "true"
-    allow_unsafe_werkzeug = os.environ.get("ALLOW_UNSAFE_WERKZEUG", "true").lower() == "true"
+    allow_unsafe_werkzeug = os.environ.get("ALLOW_UNSAFE_WERKZEUG", str(dev_mode).lower()).lower() == "true"
     socketio.run(
         app,
         host='0.0.0.0',
