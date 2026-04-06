@@ -351,8 +351,11 @@ def _save_gold_state(state: dict) -> None:
     with open(GOLD_VERSION_STATE_PATH, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
 
-def _ensure_run_context(ti) -> dict:
-    """Return run context from the bronze_prepare_run_context task's XCom (read-only)."""
+def _ensure_run_context(ti, create_if_missing: bool = False) -> dict:
+    """Return run context from bronze_prepare_run_context XCom.
+
+    If create_if_missing=True, generate and push a new run context on the current task.
+    """
     CONTEXT_TASK_ID = "bronze_prepare_run_context"
     run_dir = ti.xcom_pull(task_ids=CONTEXT_TASK_ID, key="run_dir")
     run_id = ti.xcom_pull(task_ids=CONTEXT_TASK_ID, key="run_id")
@@ -360,6 +363,27 @@ def _ensure_run_context(ti) -> dict:
     run_stamp = ti.xcom_pull(task_ids=CONTEXT_TASK_ID, key="run_stamp")
 
     if run_dir and run_id and run_month and run_stamp:
+        return {
+            "run_dir": run_dir,
+            "run_id": run_id,
+            "run_month": run_month,
+            "run_stamp": run_stamp,
+        }
+
+    if create_if_missing:
+        now = datetime.now()
+        run_id = now.strftime("%Y%m%d_%H%M%S")
+        run_month = now.strftime("%Y%m")
+        run_stamp = now.strftime("%Y%m%dT%H%M%S")
+        run_dir = f"{PROJECT_ROOT}/data/runs/preprocess_{run_id}"
+        os.makedirs(run_dir, exist_ok=True)
+
+        ti.xcom_push(key="run_dir", value=run_dir)
+        ti.xcom_push(key="run_id", value=run_id)
+        ti.xcom_push(key="run_month", value=run_month)
+        ti.xcom_push(key="run_stamp", value=run_stamp)
+        print(f"✅ Run context prepared: run_id={run_id}, run_dir={run_dir}")
+
         return {
             "run_dir": run_dir,
             "run_id": run_id,
@@ -375,7 +399,7 @@ def _ensure_run_context(ti) -> dict:
 
 def prepare_run_context(**context):
     """Prepare run context for downstream Bronze/Silver/Gold tasks."""
-    _ensure_run_context(context["task_instance"])
+    _ensure_run_context(context["task_instance"], create_if_missing=True)
 
 
 def ingest_local_raw_to_bronze(**context):

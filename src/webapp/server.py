@@ -568,7 +568,7 @@ def handle_reset():
 
 def initialize_app():
     """Initialize app"""
-    global model, label_list, holistic
+    global model, label_list, holistic, minio_client
     
     logger.info("=" * 70)
     logger.info("WEBAPP STARTING - Vietnamese Sign Language Recognition")
