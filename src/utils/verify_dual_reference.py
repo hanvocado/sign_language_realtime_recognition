@@ -32,6 +32,8 @@ import matplotlib.pyplot as plt
 import mediapipe as mp
 from tqdm import tqdm
 
+from common_functions import normalize_keypoints
+
 
 # ============================================================================
 # MediaPipe Landmark Indices Reference
@@ -302,6 +304,29 @@ class DualReferenceVerifier:
 
         return trajectory
 
+    def current_normalization(self, sequence: np.ndarray):
+        """
+        Apply current normalization from common_functions.py
+        (center at wrist midpoint, scale by bounding box diagonal)
+
+        Returns:
+            morph: (T, 126) - Hand keypoints after current normalization
+            traj: (T, 6) - Wrist positions after current normalization
+        """
+        normalized = normalize_keypoints(sequence.copy())
+
+        # Extract hand keypoints (same indices as wrist-centric)
+        left_hand = normalized[:, HAND_INDICES['left'][0]:HAND_INDICES['left'][1]]
+        right_hand = normalized[:, HAND_INDICES['right'][0]:HAND_INDICES['right'][1]]
+        morph = np.concatenate([left_hand, right_hand], axis=1)
+
+        # Extract wrist positions (trajectory)
+        left_wrist = normalized[:, WRIST_INDICES['left'][0]:WRIST_INDICES['left'][1]]
+        right_wrist = normalized[:, WRIST_INDICES['right'][0]:WRIST_INDICES['right'][1]]
+        traj = np.concatenate([left_wrist, right_wrist], axis=1)
+
+        return morph, traj
+
     def face_centric_normalization_unscaled(self, sequence: np.ndarray) -> np.ndarray:
         """
         Chuẩn hóa theo khuôn mặt KHÔNG scale (chỉ centering)
@@ -376,92 +401,136 @@ class DualReferenceVerifier:
         traj2_scaled: np.ndarray,
         traj1_unscaled: np.ndarray,
         traj2_unscaled: np.ndarray,
+        curr_morph1: np.ndarray,
+        curr_morph2: np.ndarray,
+        curr_traj1: np.ndarray,
+        curr_traj2: np.ndarray,
         output_path: str = "dual_reference_verification.png"
     ):
-        """Tạo visualization với 4 plots (2x2)"""
-        fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+        """Tạo visualization với 6 plots (2x3): Current vs Dual-Reference"""
+        fig, axes = plt.subplots(2, 3, figsize=(18, 8))
 
         color1, color2 = '#2E86AB', '#A23B72'
 
-        # ===== ROW 1: MORPHOLOGY (Wrist-centric) =====
-        # Left: Without scale normalization
-        ax1 = axes[0, 0]
+        # Pre-compute metrics for all 6 subplots
+        metrics_grid = [
+            [self.compute_metrics(curr_morph1, curr_morph2),
+             self.compute_metrics(morph1, morph2),
+             self.compute_metrics(morph1_scaled, morph2_scaled)],
+            [self.compute_metrics(curr_traj1, curr_traj2),
+             self.compute_metrics(traj1_unscaled, traj2_unscaled),
+             self.compute_metrics(traj1_scaled, traj2_scaled)],
+        ]
+
+        def _add_metrics(ax, m):
+            ax.text(0.97, 0.03,
+                    f"corr={m['correlation']:.3f}\ncos={m['cosine_sim']:.3f}\nL2={m['mean_l2']:.3f}",
+                    transform=ax.transAxes, fontsize=8, fontfamily='monospace',
+                    va='bottom', ha='right',
+                    bbox=dict(boxstyle='round,pad=0.4', facecolor='wheat', alpha=0.8))
+
+        # ===== ROW 1: MORPHOLOGY (Hand shape) =====
+        # Col 0: Current normalization
+        ax = axes[0, 0]
+        curr_morph1_mag = np.linalg.norm(curr_morph1, axis=1)
+        curr_morph2_mag = np.linalg.norm(curr_morph2, axis=1)
+        ax.plot(curr_morph1_mag, color=color1, linewidth=2, label=gloss1.upper(), alpha=0.8)
+        ax.plot(curr_morph2_mag, color=color2, linewidth=2, label=gloss2.upper(), alpha=0.8, linestyle='--')
+        ax.set_xlabel('Frame', fontweight='bold')
+        ax.set_ylabel('||Morphology||', fontweight='bold')
+        ax.set_title('Min-Max normalization', fontweight='bold', pad=10)
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        _add_metrics(ax, metrics_grid[0][0])
+
+        # Col 1: Wrist-centric without scale
+        ax = axes[0, 1]
         morph1_mag = np.linalg.norm(morph1, axis=1)
         morph2_mag = np.linalg.norm(morph2, axis=1)
+        ax.plot(morph1_mag, color=color1, linewidth=2, label=gloss1.upper(), alpha=0.8)
+        ax.plot(morph2_mag, color=color2, linewidth=2, label=gloss2.upper(), alpha=0.8, linestyle='--')
+        ax.set_xlabel('Frame', fontweight='bold')
+        ax.set_ylabel('||Morphology||', fontweight='bold')
+        ax.set_title('Wrist-centric (no scale)', fontweight='bold', pad=10)
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        _add_metrics(ax, metrics_grid[0][1])
 
-        ax1.plot(morph1_mag, color=color1, linewidth=2, label=gloss1.upper(), alpha=0.8)
-        ax1.plot(morph2_mag, color=color2, linewidth=2, label=gloss2.upper(), alpha=0.8, linestyle='--')
-        ax1.set_xlabel('Frame', fontweight='bold')
-        ax1.set_ylabel('||Morphology||', fontweight='bold')
-        ax1.set_title('Morphology (no scale)', fontweight='bold', pad=10)
-        ax1.legend()
-        ax1.grid(True, alpha=0.3)
-
-        # Right: With scale normalization
-        ax2 = axes[0, 1]
+        # Col 2: Wrist-centric with scale
+        ax = axes[0, 2]
         morph1_scaled_mag = np.linalg.norm(morph1_scaled, axis=1)
         morph2_scaled_mag = np.linalg.norm(morph2_scaled, axis=1)
+        ax.plot(morph1_scaled_mag, color=color1, linewidth=2, label=gloss1.upper(), alpha=0.8)
+        ax.plot(morph2_scaled_mag, color=color2, linewidth=2, label=gloss2.upper(), alpha=0.8, linestyle='--')
+        ax.set_xlabel('Frame', fontweight='bold')
+        ax.set_ylabel('||Morphology||', fontweight='bold')
+        ax.set_title('Wrist-centric (with scale)', fontweight='bold', pad=10)
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        _add_metrics(ax, metrics_grid[0][2])
 
-        ax2.plot(morph1_scaled_mag, color=color1, linewidth=2, label=gloss1.upper(), alpha=0.8)
-        ax2.plot(morph2_scaled_mag, color=color2, linewidth=2, label=gloss2.upper(), alpha=0.8, linestyle='--')
-        ax2.set_xlabel('Frame', fontweight='bold')
-        ax2.set_ylabel('||Morphology||', fontweight='bold')
-        ax2.set_title('Morphology (with scale)', fontweight='bold', pad=10)
-        ax2.legend()
-        ax2.grid(True, alpha=0.3)
+        # ===== ROW 2: TRAJECTORY (Wrist position) =====
+        # Col 0: Current normalization
+        ax = axes[1, 0]
+        curr_traj1_y = curr_traj1[:, 4]  # Right wrist Y
+        curr_traj2_y = curr_traj2[:, 4]
+        ax.plot(curr_traj1_y, color=color1, linewidth=2, label=gloss1.upper(), alpha=0.8)
+        ax.plot(curr_traj2_y, color=color2, linewidth=2, label=gloss2.upper(), alpha=0.8, linestyle='--')
+        ax.axhline(y=0, color='black', linestyle=':', alpha=0.5, label='Wrist midpoint')
+        ax.set_xlabel('Frame', fontweight='bold')
+        ax.set_ylabel('Wrist Y', fontweight='bold')
+        ax.set_title('Min-Max normalization', fontweight='bold', pad=10)
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        _add_metrics(ax, metrics_grid[1][0])
 
-        # ===== ROW 2: TRAJECTORY (Face-centric) =====
-        # Left: Without scale normalization
-        ax3 = axes[1, 0]
+        # Col 1: Face-centric without scale
+        ax = axes[1, 1]
         traj1_unscaled_y = traj1_unscaled[:, 4]  # Right wrist Y
         traj2_unscaled_y = traj2_unscaled[:, 4]
+        ax.plot(traj1_unscaled_y, color=color1, linewidth=2, label=gloss1.upper(), alpha=0.8)
+        ax.plot(traj2_unscaled_y, color=color2, linewidth=2, label=gloss2.upper(), alpha=0.8, linestyle='--')
+        ax.axhline(y=0, color='black', linestyle=':', alpha=0.5, label='Face center')
+        ax.set_xlabel('Frame', fontweight='bold')
+        ax.set_ylabel('Wrist Y (raw)', fontweight='bold')
+        ax.set_title('Face-centric (no scale)', fontweight='bold', pad=10)
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        _add_metrics(ax, metrics_grid[1][1])
 
-        ax3.plot(traj1_unscaled_y, color=color1, linewidth=2, label=gloss1.upper(), alpha=0.8)
-        ax3.plot(traj2_unscaled_y, color=color2, linewidth=2, label=gloss2.upper(), alpha=0.8, linestyle='--')
-        ax3.axhline(y=0, color='black', linestyle=':', alpha=0.5, label='Face center')
-        ax3.set_xlabel('Frame', fontweight='bold')
-        ax3.set_ylabel('Wrist Y (raw)', fontweight='bold')
-        ax3.set_title('Trajectory (no scale)', fontweight='bold', pad=10)
-        ax3.legend()
-        ax3.grid(True, alpha=0.3)
-
-        # Right: With scale normalization
-        ax4 = axes[1, 1]
+        # Col 2: Face-centric with scale
+        ax = axes[1, 2]
         traj1_scaled_y = traj1_scaled[:, 4]  # Right wrist Y
         traj2_scaled_y = traj2_scaled[:, 4]
+        ax.plot(traj1_scaled_y, color=color1, linewidth=2, label=gloss1.upper(), alpha=0.8)
+        ax.plot(traj2_scaled_y, color=color2, linewidth=2, label=gloss2.upper(), alpha=0.8, linestyle='--')
+        ax.axhline(y=0, color='black', linestyle=':', alpha=0.5, label='Face center')
+        ax.set_xlabel('Frame', fontweight='bold')
+        ax.set_ylabel('Wrist Y (normalized)', fontweight='bold')
+        ax.set_title('Face-centric (with scale)', fontweight='bold', pad=10)
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        _add_metrics(ax, metrics_grid[1][2])
 
-        ax4.plot(traj1_scaled_y, color=color1, linewidth=2, label=gloss1.upper(), alpha=0.8)
-        ax4.plot(traj2_scaled_y, color=color2, linewidth=2, label=gloss2.upper(), alpha=0.8, linestyle='--')
-        ax4.axhline(y=0, color='black', linestyle=':', alpha=0.5, label='Face center')
-        ax4.set_xlabel('Frame', fontweight='bold')
-        ax4.set_ylabel('Wrist Y (normalized)', fontweight='bold')
-        ax4.set_title('Trajectory (with scale)', fontweight='bold', pad=10)
-        ax4.legend()
-        ax4.grid(True, alpha=0.3)
-
-        # Set same y-axis scale for all 4 plots
-        all_values = np.concatenate([
-            morph1_mag, morph2_mag, morph1_scaled_mag, morph2_scaled_mag,
-            traj1_scaled_y, traj2_scaled_y, traj1_unscaled_y, traj2_unscaled_y
-        ])
-        y_min, y_max = all_values.min(), all_values.max()
-        y_margin = (y_max - y_min) * 0.05
-        for ax in [ax1, ax2, ax3, ax4]:
-            ax.set_ylim(y_min - y_margin, y_max + y_margin)
+        # Set same y-axis scale for each row
+        for row in range(2):
+            y_min = min(ax.get_ylim()[0] for ax in axes[row])
+            y_max = max(ax.get_ylim()[1] for ax in axes[row])
+            for ax in axes[row]:
+                ax.set_ylim(y_min, y_max)
 
         fig.suptitle(f'{gloss1.upper()} ({video_id1}) vs {gloss2.upper()} ({video_id2})', fontsize=14, fontweight='bold')
         plt.tight_layout(rect=[0, 0, 1, 0.96])
         plt.savefig(output_path, dpi=150, bbox_inches='tight')
         print(f"\n✓ Saved visualization: {output_path}")
 
-        # Compute metrics for return value
-        morph_metrics = self.compute_metrics(morph1, morph2)
-        traj_metrics = self.compute_metrics(traj1_scaled, traj2_scaled)
-        morph_pass = morph_metrics['correlation'] > 0.6
-        traj_pass = traj_metrics['correlation'] < 0.7
-        overall_pass = morph_pass and traj_pass
+        # Return pre-computed metrics
+        curr_morph_metrics = metrics_grid[0][0]
+        morph_metrics = metrics_grid[0][2]
+        curr_traj_metrics = metrics_grid[1][0]
+        traj_metrics = metrics_grid[1][2]
 
-        return morph_metrics, traj_metrics, overall_pass
+        return curr_morph_metrics, morph_metrics, curr_traj_metrics, traj_metrics
 
 
 def main():
@@ -526,38 +595,58 @@ def main():
         print("STEP 3: Applying normalization")
         print("-"*80)
 
+        # Current normalization (from common_functions)
+        curr_morph1, curr_traj1 = verifier.current_normalization(landmarks1)
+        curr_morph2, curr_traj2 = verifier.current_normalization(landmarks2)
+        print(f"  ✓ Current (bbox): morph {gloss1}={curr_morph1.shape}, traj {gloss1}={curr_traj1.shape}")
+
         # Wrist-centric (morphology)
         morph1 = verifier.wrist_centric_normalization(landmarks1)
         morph2 = verifier.wrist_centric_normalization(landmarks2)
-        print(f"  ✓ Morphology (no scale): {gloss1}={morph1.shape}, {gloss2}={morph2.shape}")
+        print(f"  ✓ Wrist-centric (no scale): {gloss1}={morph1.shape}, {gloss2}={morph2.shape}")
 
         morph1_scaled = verifier.wrist_centric_normalization_scaled(landmarks1)
         morph2_scaled = verifier.wrist_centric_normalization_scaled(landmarks2)
-        print(f"  ✓ Morphology (with scale): {gloss1}={morph1_scaled.shape}, {gloss2}={morph2_scaled.shape}")
+        print(f"  ✓ Wrist-centric (with scale): {gloss1}={morph1_scaled.shape}, {gloss2}={morph2_scaled.shape}")
 
         # Face-centric (trajectory)
         traj1_scaled = verifier.face_centric_normalization(landmarks1)
         traj2_scaled = verifier.face_centric_normalization(landmarks2)
-        print(f"  ✓ Trajectory (with scale): {gloss1}={traj1_scaled.shape}, {gloss2}={traj2_scaled.shape}")
+        print(f"  ✓ Face-centric (with scale): {gloss1}={traj1_scaled.shape}, {gloss2}={traj2_scaled.shape}")
 
         traj1_unscaled = verifier.face_centric_normalization_unscaled(landmarks1)
         traj2_unscaled = verifier.face_centric_normalization_unscaled(landmarks2)
-        print(f"  ✓ Trajectory (no scale): {gloss1}={traj1_unscaled.shape}, {gloss2}={traj2_unscaled.shape}")
+        print(f"  ✓ Face-centric (no scale): {gloss1}={traj1_unscaled.shape}, {gloss2}={traj2_unscaled.shape}")
 
         # Visualize
         print("\n" + "-"*80)
         print("STEP 4: Generating visualization")
         print("-"*80)
 
-        verifier.visualize_results(
+        curr_morph_metrics, morph_metrics, curr_traj_metrics, traj_metrics = verifier.visualize_results(
             gloss1, gloss2,
             video_id1, video_id2,
             morph1, morph2,
             morph1_scaled, morph2_scaled,
             traj1_scaled, traj2_scaled,
             traj1_unscaled, traj2_unscaled,
+            curr_morph1, curr_morph2,
+            curr_traj1, curr_traj2,
             args.output
         )
+
+        # Print comparison metrics
+        print("\n" + "-"*80)
+        print("STEP 5: Comparison metrics")
+        print("-"*80)
+
+        print(f"\n  MORPHOLOGY (hand shape similarity):")
+        print(f"    Current (bbox):        corr={curr_morph_metrics['correlation']:.4f}  cos={curr_morph_metrics['cosine_sim']:.4f}  L2={curr_morph_metrics['mean_l2']:.4f}")
+        print(f"    Wrist-centric (scale): corr={morph_metrics['correlation']:.4f}  cos={morph_metrics['cosine_sim']:.4f}  L2={morph_metrics['mean_l2']:.4f}")
+
+        print(f"\n  TRAJECTORY (wrist position difference):")
+        print(f"    Current (bbox):        corr={curr_traj_metrics['correlation']:.4f}  cos={curr_traj_metrics['cosine_sim']:.4f}  L2={curr_traj_metrics['mean_l2']:.4f}")
+        print(f"    Face-centric (scale):  corr={traj_metrics['correlation']:.4f}  cos={traj_metrics['cosine_sim']:.4f}  L2={traj_metrics['mean_l2']:.4f}")
         
         return 0
         
