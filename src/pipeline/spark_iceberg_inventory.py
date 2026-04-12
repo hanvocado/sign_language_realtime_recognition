@@ -5,6 +5,8 @@ Commands:
 - latest-run: print latest run_id in a table
 - rows-by-run: export rows for a run_id to JSON file
 - checkpoint: export processed checkpoint (object_path, etag) to JSON file
+- latest_version: export latest numeric Gold version from run_id (v0003 -> 3)
+- snapshot_stats: export label list + total files for a specific gold version
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ import os
 from typing import Optional
 
 from pyspark.sql import SparkSession
+from pyspark.sql import functions as F
 from pyspark.sql.functions import current_timestamp
 
 
@@ -191,13 +194,85 @@ def cmd_checkpoint(args: argparse.Namespace) -> None:
     spark.stop()
 
 
+def cmd_latest_version(args: argparse.Namespace) -> None:
+    """Export latest numeric Gold snapshot version from run_id values like v0003."""
+    namespace = os.environ.get("ICEBERG_NAMESPACE", "sign_language")
+    spark = build_spark("latest-version-iceberg", args.master)
+    ensure_inventory_table(spark, args.table)
+
+    version_df = (
+        spark.table(f"{namespace}.{args.table}")
+        .filter(F.col("file_type") == "gold_landmark_snapshot")
+        .select(
+            F.regexp_extract(F.col("run_id"), r"v(\d+)", 1)
+            .cast("int")
+            .alias("ver")
+        )
+        .agg(F.max("ver").alias("max_ver"))
+    )
+
+    rows = version_df.collect()
+    latest = int(rows[0]["max_ver"] or 0) if rows else 0
+
+    with open(args.output_file, "w", encoding="utf-8") as f:
+        json.dump({"latest_version": latest}, f, ensure_ascii=False, indent=2)
+
+    print(f"EXPORTED latest_version={latest} to {args.output_file}")
+    spark.stop()
+
+
+def cmd_snapshot_stats(args: argparse.Namespace) -> None:
+    """Export labels and file count for one Gold snapshot version (run_id)."""
+    namespace = os.environ.get("ICEBERG_NAMESPACE", "sign_language")
+    spark = build_spark("snapshot-stats-iceberg", args.master)
+    ensure_inventory_table(spark, args.table)
+
+    snapshot_df = (
+        spark.table(f"{namespace}.{args.table}")
+        .filter(F.col("file_type") == "gold_landmark_snapshot")
+        .filter(F.col("run_id") == args.gold_version)
+    )
+
+    total_files = snapshot_df.count()
+    labels = sorted(
+        row["label"]
+        for row in snapshot_df.select("label").distinct().collect()
+        if row["label"]
+    )
+
+    payload = {
+        "gold_version": args.gold_version,
+        "labels": labels,
+        "total_files": total_files,
+    }
+    with open(args.output_file, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+    print(
+        f"EXPORTED snapshot_stats version={args.gold_version} "
+        f"labels={len(labels)} total_files={total_files} to {args.output_file}"
+    )
+    spark.stop()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Spark Iceberg inventory jobs")
-    parser.add_argument("command", choices=["append", "latest-run", "rows-by-run", "checkpoint"])
+    parser.add_argument(
+        "command",
+        choices=[
+            "append",
+            "latest-run",
+            "rows-by-run",
+            "checkpoint",
+            "latest_version",
+            "snapshot_stats",
+        ],
+    )
     parser.add_argument("--master", default=os.environ.get("SPARK_MASTER_URL", "spark://spark-master:7077"))
     parser.add_argument("--table", required=True)
     parser.add_argument("--rows-file")
     parser.add_argument("--run-id")
+    parser.add_argument("--gold-version")
     parser.add_argument("--output-file")
 
     args = parser.parse_args()
@@ -216,6 +291,14 @@ def main() -> None:
         if not args.output_file:
             raise ValueError("--output-file is required for checkpoint")
         cmd_checkpoint(args)
+    elif args.command == "latest_version":
+        if not args.output_file:
+            raise ValueError("--output-file is required for latest_version")
+        cmd_latest_version(args)
+    elif args.command == "snapshot_stats":
+        if not args.gold_version or not args.output_file:
+            raise ValueError("--gold-version and --output-file are required for snapshot_stats")
+        cmd_snapshot_stats(args)
 
 
 if __name__ == "__main__":
