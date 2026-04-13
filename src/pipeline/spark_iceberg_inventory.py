@@ -28,7 +28,18 @@ def build_spark(app_name: str, master: Optional[str] = None) -> SparkSession:
     postgres_port = os.environ.get("ICEBERG_POSTGRES_PORT", "5432")
     postgres_db = os.environ.get("ICEBERG_POSTGRES_DB", "iceberg")
 
-    minio_endpoint = os.environ.get("MLFLOW_S3_ENDPOINT_URL", "http://minio:9000")
+    raw_endpoint = os.environ.get(
+        "MLFLOW_S3_ENDPOINT_URL",
+        os.environ.get("MINIO_ENDPOINT", "http://minio:9000"),
+    )
+    minio_endpoint = raw_endpoint.replace("http://", "", 1).replace("https://", "", 1)
+
+    minio_secure_env = os.environ.get("MINIO_SECURE")
+    if minio_secure_env is not None:
+        minio_secure = minio_secure_env.lower() in ("1", "true", "yes")
+    else:
+        minio_secure = raw_endpoint.startswith("https://")
+
     minio_access = os.environ.get("AWS_ACCESS_KEY_ID", "minioadmin")
     minio_secret = os.environ.get("AWS_SECRET_ACCESS_KEY", "minioadmin")
     warehouse = os.environ.get("ICEBERG_WAREHOUSE", "s3a://data/lakehouse/system/iceberg")
@@ -54,7 +65,7 @@ def build_spark(app_name: str, master: Optional[str] = None) -> SparkSession:
         .config("spark.hadoop.fs.s3a.endpoint", minio_endpoint)
         .config("spark.hadoop.fs.s3a.access.key", minio_access)
         .config("spark.hadoop.fs.s3a.secret.key", minio_secret)
-        .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "false")
+        .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "true" if minio_secure else "false")
         .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
         .getOrCreate()
     )

@@ -11,13 +11,13 @@ import json
 import mlflow
 from mlflow.tracking import MlflowClient
 
-from airflow.dags.training.config import (
+from training.config import (
     ICEBERG_GOLD_TRAINING_TABLE,
     MLFLOW_TRACKING_URI,
     MLFLOW_MODEL_NAME,
     MIN_NEW_SAMPLES,
 )
-from airflow.dags.training.utils import (
+from training.utils import (
     build_spark_cmd,
     spark_query,
     ensure_run_context,

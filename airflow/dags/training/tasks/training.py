@@ -9,7 +9,7 @@ After the subprocess exits, queries MLflow for the run_id and best_val_acc.
 import mlflow
 from mlflow.tracking import MlflowClient
 
-from airflow.dags.training.config import (
+from training.config import (
     PROJECT_ROOT,
     SEQ_LEN,
     MLFLOW_TRACKING_URI,
@@ -28,7 +28,7 @@ from airflow.dags.training.config import (
     PATIENCE,
     NUM_WORKERS,
 )
-from airflow.dags.training.utils import run_streaming, ensure_run_context
+from training.utils import run_streaming, ensure_run_context
 
 # Re-export SEQ_LEN so it is importable directly from config
 from src.config.config import SEQ_LEN  # noqa: F401 (already imported above via config.py)

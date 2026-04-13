@@ -9,7 +9,7 @@ import os
 from datetime import datetime, timedelta
 
 from src.config.config import DATASET_NAME, SEQ_LEN
-from airflow.dags.preprocessing_pipeline import task_failure_email_alert
+from preprocessing_pipeline import task_failure_email_alert
 
 # ── MinIO ────────────────────────────────────────────────────────────
 AWS_ACCESS_KEY = os.environ.get("AWS_ACCESS_KEY_ID",     "minioadmin")
@@ -29,9 +29,9 @@ MINIO_GOLD_ROOT_PREFIX = os.environ.get(
     f"lakehouse/gold/{DATASET_NAME}/npy/{SEQ_LEN}",
 ).strip("/")
 
-GOLD_VERSION_STATE_PATH = os.environ.get(
-    "GOLD_VERSION_STATE_PATH",
-    f"{PROJECT_ROOT}/data/{DATASET_NAME}/gold_version_state.json",
+TRAINING_SENSOR_STATE_PATH = os.environ.get(
+    "TRAINING_SENSOR_STATE_PATH",
+    f"{PROJECT_ROOT}/data/{DATASET_NAME}/training_sensor_state.json",
 )
 LOCAL_TRAINING_DIR = f"{PROJECT_ROOT}/data/{DATASET_NAME}/training"
 LOCAL_SPLIT_DIR    = f"{PROJECT_ROOT}/data/{DATASET_NAME}/split"

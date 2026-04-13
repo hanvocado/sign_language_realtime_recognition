@@ -38,15 +38,15 @@ from airflow.operators.python import PythonOperator, BranchPythonOperator
 from airflow.operators.empty import EmptyOperator
 from airflow.utils.task_group import TaskGroup
 
-from airflow.dags.training.config import DEFAULT_ARGS
-from airflow.dags.training.sensors import IcebergGoldVersionSensor
-from airflow.dags.training.tasks.context    import prepare_run_context
-from airflow.dags.training.tasks.retrain    import retrain_check, branch_on_decision
-from airflow.dags.training.tasks.data       import download_gold_snapshot, split_dataset
-from airflow.dags.training.tasks.training   import train_model
-from airflow.dags.training.tasks.evaluation import evaluate_model
-from airflow.dags.training.tasks.registry   import promote_or_skip
-from airflow.dags.preprocessing_pipeline    import task_failure_email_alert
+from training.config import DEFAULT_ARGS
+from training.sensors import IcebergGoldVersionSensor
+from training.tasks.context import prepare_run_context
+from training.tasks.retrain import retrain_check, branch_on_decision
+from training.tasks.data import download_gold_snapshot, split_dataset
+from training.tasks.training import train_model
+from training.tasks.evaluation import evaluate_model
+from training.tasks.registry import promote_or_skip
+from preprocessing_pipeline import task_failure_email_alert
 
 with DAG(
     dag_id="training_pipeline",

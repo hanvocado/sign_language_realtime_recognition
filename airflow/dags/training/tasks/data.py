@@ -12,16 +12,15 @@ import shutil
 
 from minio import Minio
 
-from airflow.dags.training.config import (
+from training.config import (
     AWS_ACCESS_KEY,
     AWS_SECRET_KEY,
-    MINIO_ENDPOINT,
     MINIO_BUCKET,
     LOCAL_TRAINING_DIR,
     LOCAL_SPLIT_DIR,
     PROJECT_ROOT,
 )
-from airflow.dags.training.utils import run_streaming
+from training.utils import run_streaming
 
 
 # ── Task callables ───────────────────────────────────────────────────
@@ -37,8 +36,21 @@ def download_gold_snapshot(**context) -> None:
     gold_version = ti.xcom_pull(task_ids="training_retrain_check", key="gold_version")
     gold_prefix  = ti.xcom_pull(task_ids="training_retrain_check", key="gold_prefix")
 
-    client        = Minio(MINIO_ENDPOINT, access_key=AWS_ACCESS_KEY,
-                          secret_key=AWS_SECRET_KEY, secure=False)
+    raw_endpoint = os.environ.get("MINIO_ENDPOINT", "minio:9000")
+    endpoint = raw_endpoint.replace("http://", "", 1).replace("https://", "", 1)
+
+    minio_secure_env = os.environ.get("MINIO_SECURE")
+    if minio_secure_env is not None:
+        secure = minio_secure_env.lower() in ("1", "true", "yes")
+    else:
+        secure = raw_endpoint.startswith("https://")
+
+    client = Minio(
+        endpoint,
+        access_key=AWS_ACCESS_KEY,
+        secret_key=AWS_SECRET_KEY,
+        secure=secure,
+    )
     local_dir     = os.path.join(LOCAL_TRAINING_DIR, gold_version)
     manifest_path = os.path.join(LOCAL_TRAINING_DIR, f".manifest_{gold_version}.json")
     os.makedirs(local_dir, exist_ok=True)

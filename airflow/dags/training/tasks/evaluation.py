@@ -10,11 +10,11 @@ import os
 import json
 from pathlib import Path
 
-from airflow.dags.training.config import (
+from training.config import (
     PROJECT_ROOT,
     MLFLOW_TRACKING_URI,
 )
-from airflow.dags.training.utils import run_streaming, ensure_run_context
+from training.utils import run_streaming, ensure_run_context
 
 from src.config.config import SEQ_LEN
 

@@ -10,14 +10,14 @@ import json
 
 from airflow.sensors.base import BaseSensorOperator
 
-from airflow.dags.training.config import ICEBERG_GOLD_TRAINING_TABLE
-from airflow.dags.training.utils import build_spark_cmd, spark_query, load_gold_state
+from training.config import ICEBERG_GOLD_TRAINING_TABLE
+from training.utils import build_spark_cmd, spark_query, load_training_sensor_state
 
 
 class IcebergGoldVersionSensor(BaseSensorOperator):
     """
     Succeeds when the Iceberg inventory table contains a gold_version
-    higher than the last version recorded in gold_version_state.json.
+    higher than the last version consumed by training.
 
     On success pushes to XCom:
         gold_version     : str  e.g. "v0003"
@@ -26,10 +26,10 @@ class IcebergGoldVersionSensor(BaseSensorOperator):
     """
 
     def poke(self, context) -> bool:
-        from airflow.dags.training.config import MINIO_GOLD_ROOT_PREFIX
+        from training.config import MINIO_GOLD_ROOT_PREFIX
 
-        gold_state   = load_gold_state()
-        latest_known = int(gold_state.get("latest_version", 0))
+        sensor_state = load_training_sensor_state()
+        latest_known = int(sensor_state.get("last_consumed_version", 0))
 
         output_file = f"/tmp/slr_gold_sensor_{context['run_id']}.json"
         cmd = build_spark_cmd(

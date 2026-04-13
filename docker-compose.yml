@@ -294,6 +294,7 @@ services:
       DATASET_NAME: wlasl
       MINIO_UPLOAD_PREFIX: lakehouse/bronze/wlasl/videos/user_uploads
       MLFLOW_TRACKING_URI: http://mlflow:5000
+      ALLOW_UNSAFE_WERKZEUG: "true"
     volumes:
       - ./src:/app/src
       - ./models:/app/models

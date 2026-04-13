@@ -12,9 +12,9 @@ from datetime import datetime
 
 import psycopg2
 
-from airflow.dags.training.config import (
+from training.config import (
     PROJECT_ROOT,
-    GOLD_VERSION_STATE_PATH,
+    TRAINING_SENSOR_STATE_PATH,
     SPARK_MASTER_URL,
     SPARK_ICEBERG_PACKAGES,
     SPARK_ICEBERG_JOB,
@@ -152,22 +152,26 @@ def ensure_run_context(ti, create_if_missing: bool = False) -> dict:
     )
 
 
-# ── Gold version state ───────────────────────────────────────────────
+# ── Training sensor state ───────────────────────────────────────────
 
-def load_gold_state() -> dict:
-    """Read gold_version_state.json written by preprocessing_pipeline."""
+def load_training_sensor_state() -> dict:
+    """Read training sensor state used to track last consumed Gold version."""
     try:
-        with open(GOLD_VERSION_STATE_PATH) as f:
+        with open(TRAINING_SENSOR_STATE_PATH) as f:
             payload = json.load(f)
         if not isinstance(payload, dict):
-            return {"latest_version": 0}
-        payload.setdefault("latest_version", 0)
+            return {"last_consumed_version": 0}
+
+        # Backward compatibility for older state keys.
+        if "last_consumed_version" not in payload:
+            payload["last_consumed_version"] = int(payload.get("latest_version", 0) or 0)
+
         return payload
     except Exception:
-        return {"latest_version": 0}
+        return {"last_consumed_version": 0}
 
 
-def save_gold_state(state: dict) -> None:
-    os.makedirs(os.path.dirname(GOLD_VERSION_STATE_PATH), exist_ok=True)
-    with open(GOLD_VERSION_STATE_PATH, "w") as f:
+def save_training_sensor_state(state: dict) -> None:
+    os.makedirs(os.path.dirname(TRAINING_SENSOR_STATE_PATH), exist_ok=True)
+    with open(TRAINING_SENSOR_STATE_PATH, "w") as f:
         json.dump(state, f, indent=2)

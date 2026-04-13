@@ -21,7 +21,7 @@ MLflow version tags set on every registered version
   promoted_by   : "training_pipeline"
   trained_at    : ISO timestamp
 
-gold_version_state.json is always advanced so the sensor won't re-fire
+training sensor state is always advanced so the sensor won't re-fire
 for the same Gold snapshot regardless of the promotion outcome.
 """
 
@@ -30,12 +30,15 @@ from datetime import datetime
 import mlflow
 from mlflow.tracking import MlflowClient
 
-from airflow.dags.training.config import (
+from training.config import (
     MLFLOW_TRACKING_URI,
     MLFLOW_MODEL_NAME,
     PROMOTE_MIN_ACC,
 )
-from airflow.dags.training.utils import load_gold_state, save_gold_state
+from training.utils import (
+    load_training_sensor_state,
+    save_training_sensor_state,
+)
 
 # Tag key used to identify the active champion version
 _ROLE_TAG = "role"
@@ -147,7 +150,7 @@ def promote_or_skip(**context) -> None:
         ti.xcom_push(key="challenger_ver", value=version)
         ti.xcom_push(key="champion_ver",   value=None)
         ti.xcom_push(key="role",           value=_REJECTED)
-        _advance_gold_state(iceberg_version, mlflow_run_id, gold_version)
+        _advance_training_sensor_state(iceberg_version, mlflow_run_id, gold_version)
         return
 
     # ── Step 2: register challenger ──
@@ -202,18 +205,21 @@ def promote_or_skip(**context) -> None:
         ti.xcom_push(key="champion_ver",   value=champ_version)
         ti.xcom_push(key="role",           value=_CHALLENGER)
 
-    _advance_gold_state(iceberg_version, mlflow_run_id, gold_version)
+    _advance_training_sensor_state(iceberg_version, mlflow_run_id, gold_version)
 
 
-def _advance_gold_state(iceberg_version: int, mlflow_run_id: str,
-                        gold_version: str) -> None:
-    """Always advance the state file so the sensor won't re-fire."""
-    gold_state = load_gold_state()
-    gold_state.update({
-        "latest_version":       iceberg_version,
+def _advance_training_sensor_state(
+    iceberg_version: int,
+    mlflow_run_id: str,
+    gold_version: str,
+) -> None:
+    """Always advance consumed-version state so sensor won't re-fire."""
+    sensor_state = load_training_sensor_state()
+    sensor_state.update({
+        "last_consumed_version": iceberg_version,
         "last_training_run_id": mlflow_run_id,
         "last_trained_at":      datetime.now().isoformat(),
         "last_gold_version":    gold_version,
     })
-    save_gold_state(gold_state)
-    print(f"Gold version state advanced to {iceberg_version}")
+    save_training_sensor_state(sensor_state)
+    print(f"Training sensor state advanced to consumed version {iceberg_version}")
