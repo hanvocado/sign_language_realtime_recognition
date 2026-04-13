@@ -47,6 +47,7 @@ def train_model(**context) -> None:
     run_ctx     = ensure_run_context(ti)
 
     ckpt_dir     = f"{run_ctx['run_dir']}/checkpoints"
+    run_id_file  = f"{run_ctx['run_dir']}/mlflow_run_id.txt"
     effective_lr = str(FINETUNE_LR if decision == "finetune" else LR)
 
     cmd = [
@@ -57,6 +58,7 @@ def train_model(**context) -> None:
         "--model-name",      MLFLOW_MODEL_NAME,
         "--data-dir",        split_dir,
         "--ckpt-dir",        ckpt_dir,
+        "--run-id-output-file", run_id_file,
         "--model-type",      MODEL_TYPE,
         "--hidden-dim",      str(HIDDEN_DIM),
         "--num-layers",      str(NUM_LAYERS),
@@ -79,23 +81,23 @@ def train_model(**context) -> None:
 
     run_streaming(cmd, cwd=PROJECT_ROOT)
 
-    # ── Retrieve completed run from MLflow ──
+    # ── Retrieve completed run_id from the output file written by the subprocess ──
+    try:
+        with open(run_id_file) as f:
+            mlflow_run_id = f.read().strip()
+    except FileNotFoundError:
+        raise RuntimeError(
+            f"Training subprocess did not write run_id to {run_id_file}. "
+            "Check subprocess logs for errors."
+        )
+
+    if not mlflow_run_id:
+        raise RuntimeError(f"run_id file {run_id_file} is empty")
+
     mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
     client = MlflowClient(MLFLOW_TRACKING_URI)
-    exp    = client.get_experiment_by_name(MLFLOW_EXPERIMENT)
-    if exp is None:
-        raise RuntimeError(f"MLflow experiment '{MLFLOW_EXPERIMENT}' not found")
-
-    runs = client.search_runs(
-        experiment_ids=[exp.experiment_id],
-        order_by=["start_time DESC"],
-        max_results=1,
-    )
-    if not runs:
-        raise RuntimeError("No MLflow runs found after training completed")
-
-    mlflow_run_id = runs[0].info.run_id
-    best_val_acc  = runs[0].data.metrics.get("best_val_acc", 0.0)
+    run    = client.get_run(mlflow_run_id)
+    best_val_acc = run.data.metrics.get("best_val_acc", 0.0)
 
     print(f"Training complete — run_id={mlflow_run_id}, best_val_acc={best_val_acc:.4f}")
     ti.xcom_push(key="mlflow_run_id", value=mlflow_run_id)

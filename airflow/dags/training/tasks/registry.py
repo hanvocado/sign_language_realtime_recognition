@@ -53,28 +53,43 @@ _REJECTED  = "rejected"
 def _get_champion(client: MlflowClient) -> tuple[str | None, float]:
     """
     Return (version, val_acc) of the current champion, or (None, 0.0).
-    Searches all Production versions for the one tagged role=champion.
+    Searches all Production versions for the one tagged role=champion using
+    search_model_versions to correctly handle multiple Production versions.
     Falls back to the latest Production version if no tag is set
     (handles the migration case where old versions have no role tag).
     """
     try:
-        versions = client.get_latest_versions(MLFLOW_MODEL_NAME, stages=["Production"])
+        # Use search_model_versions to find Production versions tagged as champion
+        champion_versions = client.search_model_versions(
+            filter_string=f"name='{MLFLOW_MODEL_NAME}' and tag.{_ROLE_TAG}='{_CHAMPION}'"
+        )
+        # Filter to only Production stage
+        champion_versions = [mv for mv in champion_versions if mv.current_stage == "Production"]
     except Exception:
-        return None, 0.0
+        champion_versions = []
 
-    if not versions:
-        return None, 0.0
-
-    for mv in versions:
+    if champion_versions:
+        mv   = champion_versions[0]
         tags = {t.key: t.value for t in client.get_model_version(
             MLFLOW_MODEL_NAME, mv.version
         ).tags}
-        if tags.get(_ROLE_TAG) == _CHAMPION:
-            acc = float(tags.get("val_acc", 0.0))
-            return mv.version, acc
+        acc = float(tags.get("val_acc", 0.0))
+        return mv.version, acc
 
-    # Fallback: treat latest Production version as champion (no role tag yet)
-    mv  = versions[0]
+    # Fallback: no champion tag — check for any Production version
+    try:
+        versions = client.search_model_versions(
+            filter_string=f"name='{MLFLOW_MODEL_NAME}'"
+        )
+        prod_versions = [mv for mv in versions if mv.current_stage == "Production"]
+    except Exception:
+        return None, 0.0
+
+    if not prod_versions:
+        return None, 0.0
+
+    # Use the latest Production version as fallback
+    mv  = sorted(prod_versions, key=lambda v: int(v.version), reverse=True)[0]
     run = client.get_run(mv.run_id)
     acc = run.data.metrics.get("best_val_acc", 0.0)
     return mv.version, acc
@@ -178,8 +193,14 @@ def promote_or_skip(**context) -> None:
             f"Challenger v{version} ({best_val_acc:.4f}) beats "
             f"champion v{champ_version} ({champ_acc:.4f}) — promoting."
         )
-        # Retire the old champion first
-        _tag_version(client, champ_version, _RETIRED, champ_acc, gold_version, trained_at)
+        # Retire the old champion first, preserving its original provenance tags
+        client.set_model_version_tag(MLFLOW_MODEL_NAME, champ_version, _ROLE_TAG, _RETIRED)
+        client.set_model_version_tag(
+            MLFLOW_MODEL_NAME, champ_version, "retired_at", datetime.now().isoformat()
+        )
+        client.set_model_version_tag(
+            MLFLOW_MODEL_NAME, champ_version, "retired_by_version", str(version)
+        )
         _transition(client, champ_version, "Archived", archive_existing=False)
 
         # Crown the new champion

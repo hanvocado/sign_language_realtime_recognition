@@ -62,19 +62,43 @@ logger = logging.getLogger(__name__)
 def download_base_checkpoint(ckpt_uri: str, local_path: str = "/tmp/base_best.pth"):
     """
     Download an artifact from MLflow artifact store to local disk.
-    Supports mlflow-artifacts:// URIs (works with S3/MinIO backend).
+
+    Supports MLflow artifact URIs such as:
+      - mlflow-artifacts:/<exp_id>/<run_id>/artifacts/<path>
+      - mlflow-artifacts://<exp_id>/<run_id>/artifacts/<path>
+      - runs:/<run_id>/<path>
     """
     client = MlflowClient()
-    # mlflow-artifacts://<exp_id>/<run_id>/artifacts/<path>
-    # client.download_artifacts(run_id, artifact_path, dst_path)
-    # Parse URI
-    uri = ckpt_uri.replace("mlflow-artifacts://", "")
-    parts = uri.split("/")
-    # parts: [exp_id, run_id, "artifacts", *rest]
-    if len(parts) < 4:
-        raise ValueError(f"Cannot parse artifact URI: {ckpt_uri}")
-    run_id = parts[1]
-    artifact_path = "/".join(parts[3:])
+
+    run_id = None
+    artifact_path = None
+
+    if ckpt_uri.startswith("runs:/"):
+        uri = ckpt_uri[len("runs:/"):].lstrip("/")
+        parts = [part for part in uri.split("/") if part]
+        if len(parts) < 2:
+            raise ValueError(f"Cannot parse runs URI: {ckpt_uri}")
+        run_id = parts[0]
+        artifact_path = "/".join(parts[1:])
+    elif ckpt_uri.startswith("mlflow-artifacts://") or ckpt_uri.startswith("mlflow-artifacts:/"):
+        if ckpt_uri.startswith("mlflow-artifacts://"):
+            uri = ckpt_uri[len("mlflow-artifacts://"):]
+        else:
+            uri = ckpt_uri[len("mlflow-artifacts:/"):]
+        parts = [part for part in uri.lstrip("/").split("/") if part]
+        # Expected format: <exp_id>/<run_id>/artifacts/<path>
+        if len(parts) < 4 or parts[2] != "artifacts":
+            raise ValueError(f"Cannot parse artifact URI: {ckpt_uri}")
+        run_id = parts[1]
+        artifact_path = "/".join(parts[3:])
+    else:
+        raise ValueError(f"Unsupported checkpoint URI scheme: {ckpt_uri}")
+
+    if not run_id or not artifact_path:
+        raise ValueError(
+            f"Invalid checkpoint URI: expected non-empty run_id and artifact_path, got "
+            f"run_id={run_id!r}, artifact_path={artifact_path!r} from {ckpt_uri}"
+        )
 
     dst_dir = os.path.dirname(local_path)
     os.makedirs(dst_dir, exist_ok=True)
@@ -266,6 +290,7 @@ def main(args):
         run_tags["base_run_id"] = checkpoint.get("run_id", "unknown")
 
     # ── MLflow run ──
+    run_tags["model_name"] = args.model_name
     with mlflow.start_run(tags=run_tags) as run:
         run_id = run.info.run_id
         logger.info(f"MLflow run: {run_id}")
@@ -304,6 +329,9 @@ def main(args):
 
         if os.path.exists(ckpt_path):
             mlflow.log_artifact(ckpt_path, artifact_path="checkpoints")
+            # Load best weights back into model before logging to MLflow registry
+            best_ckpt = torch.load(ckpt_path, map_location=device)
+            model.load_state_dict(best_ckpt["model_state"])
 
         # Save and log label map
         lm_path = os.path.join(ckpt_dir, "label_map.json")
@@ -326,6 +354,14 @@ def main(args):
 
         logger.info(f"Training complete. best_val_acc={best_val_acc:.4f}")
 
+        # Write run_id to output file if requested (for deterministic retrieval by caller)
+        if args.run_id_output_file:
+            out_dir = os.path.dirname(args.run_id_output_file)
+            if out_dir:
+                os.makedirs(out_dir, exist_ok=True)
+            with open(args.run_id_output_file, "w") as f:
+                f.write(run_id)
+
     return run_id, best_val_acc
 
 
@@ -341,6 +377,8 @@ if __name__ == "__main__":
     p.add_argument("--experiment-name", default="slr_experiment")
     p.add_argument("--model-name",      default="SLR_model",
                    help="Registered model name (used by promote_model.py)")
+    p.add_argument("--run-id-output-file", default=None,
+                   help="Path to write the MLflow run_id on completion (for caller retrieval)")
 
     # Fine-tune
     p.add_argument("--base-ckpt-uri", default=None,

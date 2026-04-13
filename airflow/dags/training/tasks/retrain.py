@@ -66,7 +66,7 @@ def _fetch_production_model(client: MlflowClient) -> dict | None:
         "version":  mv.version,
         "labels":   set(json.loads(label_map_json)),
         "total":    int(params.get("train_samples", 0)),
-        "ckpt_uri": mv.source,
+        "ckpt_uri": f"runs:/{mv.run_id}/checkpoints/best.pth",
     }
 
 
