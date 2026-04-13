@@ -195,3 +195,35 @@ start
 5. **`gold_extract_landmarks`**: chạy `video2npy.py` (MediaPipe Holistic landmark extraction, seq_len padding/truncation) trên Silver videos, output `.npy`.
 6. **`gold_merge_snapshot`**: upload Silver videos + Gold landmarks lên MinIO, nếu có landmarks mới thì tạo Gold snapshot version mới (copy previous + merge new), append inventory vào Iceberg tables (Bronze, Silver, Gold) via Spark, tạo preprocessing manifest JSON.
 7. Training pipeline đọc bản Gold mới nhất, train model và log lên MLflow.
+
+
+## Training Pipeline
+Luồng xử lý (`training_pipeline` DAG — ref: `airflow/dags/training_pipeline.py`):
+
+```
+start
+  └─► iceberg_gold_sensor
+        └─► training_prepare_run_context
+              └─► training_retrain_check
+                    └─► branch_on_decision
+                          ├─► skip_training ──────────────────────────────┐
+                          └─► [training] download_gold_snapshot           │
+                                └─► split_dataset                         │
+                                      └─► train_model                     │
+                                            └─► evaluate_model            │
+                                                  └─► promote_or_skip ────┤
+                                                                          └─► end
+```
+
+1. **`iceberg_gold_sensor`**: poll Iceberg `gold_training_landmarks_inventory` để phát hiện `gold_version` mới do preprocessing pipeline publish. Push `gold_version` + `gold_prefix` vào XCom (mode `reschedule`, timeout 4h).
+2. **`training_prepare_run_context`**: tạo training run metadata (`run_id`, `run_stamp`, `run_dir`) và lưu vào XCom cho toàn pipeline dùng chung.
+3. **`training_retrain_check`**: gọi Spark để lấy label list + tổng số file của Gold snapshot hiện tại, so sánh với Production model trên MLflow registry và quyết định:
+   - `full` — chưa có Production model hoặc có label mới → train từ đầu.
+   - `finetune` — label không đổi nhưng có ≥ `MIN_NEW_SAMPLES` mẫu mới → fine-tune từ checkpoint Production (`base_ckpt_uri`).
+   - `skip` — số mẫu mới dưới ngưỡng → bỏ qua training.
+4. **`branch_on_decision`**: BranchPythonOperator route DAG theo quyết định (`skip_training` hoặc `download_gold_snapshot`).
+5. **`download_gold_snapshot`**: tải toàn bộ `lakehouse/gold/<dataset>/npy/<seq_len>/<gold_version>/` từ MinIO về staging training dir theo cấu trúc `<label>/<segment>.npy`.
+6. **`split_dataset`**: chạy `split_dataset.py` chia Gold snapshot thành train/val/test.
+7. **`train_model`**: chạy `train.py` (GRU/LSTM) với hyperparameters từ `src.config.config`. Nếu decision là `finetune` thì load weights từ `base_ckpt_uri` và dùng `FINETUNE_LR`. Log params/metrics/artifacts (`best.pth`, `label_map.json`) lên MLflow experiment `slr_experiment` kèm `dataset_version = gold_version`. Execution timeout 6h.
+8. **`evaluate_model`**: chạy inference trên test split, tính accuracy + confusion matrix, log metrics/artifacts lên MLflow run vừa tạo.
+9. **`promote_or_skip`**: nếu `test_accuracy ≥ PROMOTE_MIN_ACC` thì transition MLflow model version sang stage `Production` (archive bản cũ); ngược lại giữ nguyên và kết thúc pipeline.
