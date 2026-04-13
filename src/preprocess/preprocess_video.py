@@ -14,6 +14,7 @@ import numpy as np
 from pathlib import Path
 import argparse
 from src.utils.logger import *
+from src.config.config import RAW_DIR, PREPROCESSED_DIR
 
 def detect_motion(frame1, frame2, threshold=25, min_area=500):
     """
@@ -222,8 +223,8 @@ def batch_preprocess(input_dir, output_dir, fps=30, width=1280, height=720,
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input_dir", default="data/raw_unprocessed", help="Thư mục chứa video gốc")
-    parser.add_argument("--output_dir", default="data/raw", help="Thư mục lưu video đã chuẩn hóa")
+    parser.add_argument("--input_dir", default=RAW_DIR, help="Thư mục chứa video gốc")
+    parser.add_argument("--output_dir", default=PREPROCESSED_DIR, help="Thư mục lưu video đã chuẩn hóa")
     parser.add_argument("--fps", type=int, default=30, help="Tần số khung hình sau chuẩn hóa")
     parser.add_argument("--width", type=int, default=1280, help="Chiều rộng video output")
     parser.add_argument("--height", type=int, default=720, help="Chiều cao video output")
