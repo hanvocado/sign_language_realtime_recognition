@@ -43,8 +43,10 @@ def train_model(**context) -> None:
     ti          = context["task_instance"]
     split_dir   = ti.xcom_pull(task_ids="split_dataset",          key="split_dir")
     decision    = ti.xcom_pull(task_ids="training_retrain_check", key="decision")
+    gold_version = ti.xcom_pull(task_ids="training_retrain_check", key="gold_version")
     base_ckpt   = ti.xcom_pull(task_ids="training_retrain_check", key="base_ckpt_uri")
     run_ctx     = ensure_run_context(ti)
+    run_name    = f"{gold_version}_{decision}_{run_ctx['run_stamp']}"
 
     ckpt_dir     = f"{run_ctx['run_dir']}/checkpoints"
     run_id_file  = f"{run_ctx['run_dir']}/mlflow_run_id.txt"
@@ -58,6 +60,7 @@ def train_model(**context) -> None:
         "--model-name",      MLFLOW_MODEL_NAME,
         "--data-dir",        split_dir,
         "--ckpt-dir",        ckpt_dir,
+        "--run-name",        run_name,
         "--run-id-output-file", run_id_file,
         "--model-type",      MODEL_TYPE,
         "--hidden-dim",      str(HIDDEN_DIM),

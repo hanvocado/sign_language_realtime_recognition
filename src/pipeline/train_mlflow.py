@@ -291,7 +291,7 @@ def main(args):
 
     # ── MLflow run ──
     run_tags["model_name"] = args.model_name
-    with mlflow.start_run(tags=run_tags) as run:
+    with mlflow.start_run(run_name=args.run_name, tags=run_tags) as run:
         run_id = run.info.run_id
         logger.info(f"MLflow run: {run_id}")
 
@@ -377,6 +377,8 @@ if __name__ == "__main__":
     p.add_argument("--experiment-name", default="slr_experiment")
     p.add_argument("--model-name",      default="SLR_model",
                    help="Registered model name (used by promote_model.py)")
+    p.add_argument("--run-name", default=None,
+                   help="Optional MLflow run display name")
     p.add_argument("--run-id-output-file", default=None,
                    help="Path to write the MLflow run_id on completion (for caller retrieval)")
 

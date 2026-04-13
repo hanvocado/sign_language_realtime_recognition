@@ -51,8 +51,8 @@ from preprocessing_pipeline import task_failure_email_alert
 with DAG(
     dag_id="training_pipeline",
     default_args=DEFAULT_ARGS,
-    description="Auto-train SLR model when a new Gold snapshot is published",
-    schedule_interval=timedelta(hours=1),
+    description="Manual SLR training pipeline (dev mode)",
+    schedule_interval=None,
     catchup=False,
     on_failure_callback=task_failure_email_alert,
     tags=["training", "sign-language", "mlflow"],
