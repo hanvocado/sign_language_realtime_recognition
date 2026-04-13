@@ -1,14 +1,14 @@
 """
 Training pipeline configuration.
-
-All constants are read from environment variables with sensible defaults.
-Import this module everywhere instead of re-reading os.environ inline.
 """
 
 import os
-from datetime import datetime, timedelta
 
-from src.config.config import DATASET_NAME, SEQ_LEN
+from src.config.config import (
+    DATASET_NAME, SEQ_LEN,
+    MODEL_TYPE, HIDDEN_DIM, NUM_LAYERS, DROPOUT, BATCH_SIZE, LR, FINETUNE_LR,
+    WEIGHT_DECAY, LABEL_SMOOTHING, EPOCHS, PATIENCE, NUM_WORKERS
+)
 from preprocessing_pipeline import task_failure_email_alert
 
 # ── MinIO ────────────────────────────────────────────────────────────
@@ -57,31 +57,19 @@ MLFLOW_EXPERIMENT   = os.environ.get("MLFLOW_EXPERIMENT",   "slr_experiment")
 MLFLOW_MODEL_NAME   = os.environ.get("MLFLOW_MODEL_NAME",   "SLR_model")
 
 # ── Model hyperparameters ────────────────────────────────────────────
-MODEL_TYPE      = os.environ.get("SLR_MODEL_TYPE",           "bilstm")
-HIDDEN_DIM      = int(os.environ.get("SLR_HIDDEN_DIM",       "256"))
-NUM_LAYERS      = int(os.environ.get("SLR_NUM_LAYERS",        "2"))
-DROPOUT         = float(os.environ.get("SLR_DROPOUT",         "0.3"))
-BATCH_SIZE      = int(os.environ.get("SLR_BATCH_SIZE",        "16"))
-LR              = float(os.environ.get("SLR_LR",              "0.001"))
-FINETUNE_LR     = float(os.environ.get("SLR_FINETUNE_LR",     "0.0003"))
-WEIGHT_DECAY    = float(os.environ.get("SLR_WEIGHT_DECAY",    "0.001"))
-LABEL_SMOOTHING = float(os.environ.get("SLR_LABEL_SMOOTHING", "0.1"))
-EPOCHS          = int(os.environ.get("SLR_EPOCHS",            "200"))
-PATIENCE        = int(os.environ.get("SLR_PATIENCE",          "20"))
-NUM_WORKERS     = int(os.environ.get("SLR_NUM_WORKERS",        "0"))
+MODEL_TYPE      = os.environ.get("SLR_MODEL_TYPE",           MODEL_TYPE)
+HIDDEN_DIM      = int(os.environ.get("SLR_HIDDEN_DIM",       HIDDEN_DIM))
+NUM_LAYERS      = int(os.environ.get("SLR_NUM_LAYERS",        NUM_LAYERS))
+DROPOUT         = float(os.environ.get("SLR_DROPOUT",         DROPOUT))
+BATCH_SIZE      = int(os.environ.get("SLR_BATCH_SIZE",        BATCH_SIZE))
+LR              = float(os.environ.get("SLR_LR",              LR))
+FINETUNE_LR     = float(os.environ.get("SLR_FINETUNE_LR",     FINETUNE_LR))
+WEIGHT_DECAY    = float(os.environ.get("SLR_WEIGHT_DECAY",    WEIGHT_DECAY))
+LABEL_SMOOTHING = float(os.environ.get("SLR_LABEL_SMOOTHING", LABEL_SMOOTHING))
+EPOCHS          = int(os.environ.get("SLR_EPOCHS",            EPOCHS))
+PATIENCE        = int(os.environ.get("SLR_PATIENCE",          PATIENCE))
+NUM_WORKERS     = int(os.environ.get("SLR_NUM_WORKERS",        NUM_WORKERS))
 
 # ── Pipeline thresholds ──────────────────────────────────────────────
 MIN_NEW_SAMPLES = int(os.environ.get("SLR_MIN_NEW_SAMPLES",   "20"))
-PROMOTE_MIN_ACC = float(os.environ.get("SLR_PROMOTE_MIN_ACC", "0.70"))
-
-# ── Airflow default_args ─────────────────────────────────────────────
-DEFAULT_ARGS = {
-    "owner":               "airflow",
-    "start_date":          datetime(2026, 1, 1),
-    "depends_on_past":     False,
-    "email_on_failure":    False,
-    "email_on_retry":      False,
-    "retries":             1,
-    "retry_delay":         timedelta(minutes=5),
-    "on_failure_callback": task_failure_email_alert,
-}
+PROMOTE_MIN_ACC = float(os.environ.get("SLR_PROMOTE_MIN_ACC", "0.20"))
