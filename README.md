@@ -123,57 +123,75 @@ sign-language-recognition/
 - Coordinate normalization sử dụng wrist joints làm reference point theo công thức: L̂_t = (L_t - L_ref) / ||L_max - L_min||
 - `train.py` lưu `label_map.json` (list labels theo thứ tự index) trong folder checkpoint để inference tải lại mapping.
 
-## Cấu trúc lakehouse medallion hiện tại
+## Cấu trúc lakehouse
 
-Bucket chính: `data`
+Bucket chính: `data` — các prefix được tham số hóa theo `DATASET_NAME` (mặc định `wlasl`) và `SEQ_LEN` (mặc định `25`).
 
 ```
 data/
 └── lakehouse/
       ├── system/
-      │   └── iceberg/
+      │   └── iceberg/                          # Iceberg catalog metadata (PostgreSQL-backed)
       ├── bronze/
-   │   ├── user_upload/
-      │   │   └── <yyyymm>/<yyyymmdd>/<label>/<timestamp>_<filename>.mp4
-   │   └── local_dataset/
-      │       └── <yyyymm>/<yyyymmdd>/<label>/<timestamp>_<filename>.mp4
+      │   └── <dataset>/
+      │       └── videos/
+      │           ├── raw/                      # local dataset ingest
+      │           │   └── <yyyymm>/<yyyymmdd>/<label>/<filename>.mp4
+      │           └── user_uploads/             # webapp user uploads
+      │               └── <yyyymm>/<yyyymmdd>/<label>/<filename>.mp4
       ├── silver/
-   │   └── preprocessed/
-      │       └── <dataset_version>/
-      │           ├── raw_videos/<run_month>/<run_stamp>/<label>/<segment>.mp4
-      │           └── landmarks/<run_month>/<run_stamp>/<label>/<segment>.npy
+      │   └── <dataset>/
+      │       └── videos/
+      │           └── preprocessed/             # normalized & segmented videos
+      │               └── <run_month>/<run_stamp>/<label>/<segment>.mp4
       └── gold/
-         └── training_dataset/<gold_version>/...
+          └── <dataset>/
+              └── npy/
+                  └── <seq_len>/                # landmark arrays
+                      └── <gold_version>/       # vNNNN (e.g. v0001)
+                          └── <label>/<segment>.npy
 
-   mlflow/
-   └── lakehouse/gold/mlflow/...   (artifact root nằm trong bucket `mlflow`)
+mlflow/
+└── ...   (artifact root nằm trong bucket `mlflow`)
 ```
 
 Ý nghĩa:
 
-- Bronze (`lakehouse/bronze`): dữ liệu thô gồm cả `user_upload` và `local_dataset`.
+- **Bronze** (`lakehouse/bronze/<dataset>/videos/`): dữ liệu thô gồm `raw` (local dataset ingest) và `user_uploads` (webapp).
   Partition theo `yyyymm/yyyymmdd/label` để cân bằng giữa hiệu năng và quản lý dữ liệu.
-- Silver (`lakehouse/silver/preprocessed/<dataset_version>`): dữ liệu đã preprocess + feature extraction, có version để tái lập pipeline.
-- Gold (`lakehouse/gold/training_dataset/<gold_version>`): snapshot dữ liệu huấn luyện tổng hợp theo label, chỉ tạo version mới khi có data mới.
-- System (`lakehouse/system/iceberg`): metadata + manifests của Iceberg tables, tách riêng khỏi Medallion business layers để dễ vận hành.
-- `dataset_version` (vd `v1`, `v2`): chỉ áp dụng cho Silver/Gold khi thay đổi logic preprocess/feature schema.
+- **Silver** (`lakehouse/silver/<dataset>/videos/preprocessed/`): video đã normalize (resize, fps sync) và segment, tổ chức theo `run_month/run_stamp/label`.
+- **Gold** (`lakehouse/gold/<dataset>/npy/<seq_len>/<gold_version>/`): full snapshot landmark `.npy` theo label.
+  Mỗi version mới copy toàn bộ snapshot cũ + merge landmarks mới, đảm bảo mỗi version là self-contained.
+- **System** (`lakehouse/system/iceberg/`): metadata + manifests của Iceberg tables (catalog: PostgreSQL), tách riêng khỏi Medallion business layers.
 
 Versioning hiện tại:
 
 - Iceberg tables theo medallion:
-  - `bronze_user_upload_inventory`
-  - `silver_raw_inventory`
-  - `silver_landmarks_inventory`
-  - `gold_training_landmarks_inventory`
-- Gold dataset version (`v0001`, `v0002`, ...): tăng khi preprocessing tạo thêm landmarks mới.
-- MLflow log kèm `dataset_version` và artifacts model/eval nằm dưới nhánh `gold/.../<dataset_version>`.
+  - `bronze_user_upload_inventory` — theo dõi tất cả Bronze objects đã ingest (dùng làm checkpoint skip duplicate).
+  - `silver_raw_inventory` — theo dõi Silver preprocessed videos.
+  - `gold_training_landmarks_inventory` — theo dõi Gold landmark snapshots.
+- Gold dataset version (`v0001`, `v0002`, ...): tăng tự động mỗi lần pipeline tạo thêm landmarks mới, được lưu trong `gold_version_state.json`.
+- MLflow log kèm `dataset_version` và artifacts model/eval.
 
-Luồng xử lý:
 
-1. Mỗi lần chạy `preprocessing_pipeline`, local raw dataset được ingest vào `bronze/local_dataset/<yyyymm>/<yyyymmdd>/<label>/...` (file đã ingest thì skip).
-2. Webapp upload vào `bronze/user_upload/<yyyymm>/<yyyymmdd>/<label>/...`.
-3. DAG sync toàn bộ Bronze và chỉ lấy object chưa xử lý (skip theo object_name + etag).
-4. DAG preprocess -> lưu Silver raw videos.
-5. DAG extract landmarks -> lưu Silver landmarks.
-6. Nếu có landmarks mới, DAG publish Gold training snapshot mới theo label (`gold/training_dataset/<gold_version>/landmarks/<label>/...`).
+## Preprocessing Pipeline
+Luồng xử lý (`preprocessing_pipeline` DAG — ref: `airflow/dags/preprocessing_pipeline.py`):
+
+```
+start
+  └─► [Bronze] bronze_prepare_run_context
+        └─► bronze_ingest_local_raw
+              └─► bronze_collect_unprocessed_inputs
+                    └─► [Silver] silver_preprocess_videos
+                          └─► [Gold] gold_extract_landmarks
+                                └─► gold_merge_snapshot
+                                      └─► end
+```
+
+1. **`bronze_prepare_run_context`**: tạo run metadata (`run_id`, `run_month`, `run_stamp`, `run_dir`) dùng chung cho toàn pipeline.
+2. **`bronze_ingest_local_raw`**: upload local raw videos vào `bronze/<dataset>/videos/raw/<yyyymm>/<yyyymmdd>/<label>/...`.
+3. **`bronze_collect_unprocessed_inputs`**: load Iceberg checkpoint (via Spark) để xác định objects đã xử lý, scan tất cả Bronze sources (`raw` + `user_uploads`), chỉ download objects chưa xử lý (skip theo `etag` hoặc `object_path`) vào staging dir.
+4. **`silver_preprocess_videos`**: chạy `preprocess_video.py` (normalize 30fps, 1280x720, motion detection, segment) trên staging dir, output vào Silver local dir.
+5. **`gold_extract_landmarks`**: chạy `video2npy.py` (MediaPipe Holistic landmark extraction, seq_len padding/truncation) trên Silver videos, output `.npy`.
+6. **`gold_merge_snapshot`**: upload Silver videos + Gold landmarks lên MinIO, nếu có landmarks mới thì tạo Gold snapshot version mới (copy previous + merge new), append inventory vào Iceberg tables (Bronze, Silver, Gold) via Spark, tạo preprocessing manifest JSON.
 7. Training pipeline đọc bản Gold mới nhất, train model và log lên MLflow.
