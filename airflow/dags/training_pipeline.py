@@ -34,6 +34,7 @@ All task logic lives in airflow/dags/training/:
 from datetime import timedelta
 
 from airflow import DAG
+from airflow.models.param import Param
 from airflow.operators.python import PythonOperator, BranchPythonOperator
 from airflow.operators.empty import EmptyOperator
 from airflow.utils.task_group import TaskGroup
@@ -47,6 +48,21 @@ from training.tasks.data import download_gold_snapshot, split_dataset
 from training.tasks.training import train_model
 from training.tasks.evaluation import evaluate_model
 from training.tasks.registry import promote_or_skip
+from training.config import (
+    MODEL_TYPE,
+    HIDDEN_DIM,
+    NUM_LAYERS,
+    DROPOUT,
+    SEQ_LEN,
+    BATCH_SIZE,
+    LR,
+    FINETUNE_LR,
+    WEIGHT_DECAY,
+    LABEL_SMOOTHING,
+    EPOCHS,
+    PATIENCE,
+    NUM_WORKERS,
+)
 
 with DAG(
     dag_id="training_pipeline",
@@ -56,6 +72,90 @@ with DAG(
     catchup=False,
     on_failure_callback=task_failure_email_alert,
     tags=["training", "sign-language", "mlflow"],
+    params={
+        "model_type": Param(
+            MODEL_TYPE,
+            type="string",
+            enum=["lstm", "gru", "transformer"],
+            title="Model type",
+            description="Architecture used by src/pipeline/train_mlflow.py.",
+        ),
+        "hidden_dim": Param(
+            HIDDEN_DIM,
+            type="integer",
+            minimum=1,
+            title="Hidden dim",
+        ),
+        "num_layers": Param(
+            NUM_LAYERS,
+            type="integer",
+            minimum=1,
+            title="Num layers",
+        ),
+        "dropout": Param(
+            DROPOUT,
+            type="number",
+            minimum=0.0,
+            maximum=1.0,
+            title="Dropout",
+        ),
+        "seq_len": Param(
+            SEQ_LEN,
+            type="integer",
+            minimum=1,
+            title="Sequence length",
+        ),
+        "batch_size": Param(
+            BATCH_SIZE,
+            type="integer",
+            minimum=1,
+            title="Batch size",
+        ),
+        "lr": Param(
+            LR,
+            type="number",
+            minimum=0.0,
+            title="Learning rate",
+        ),
+        "finetune_lr": Param(
+            FINETUNE_LR,
+            type="number",
+            minimum=0.0,
+            title="Fine-tune learning rate",
+            description="Used when retrain decision is 'finetune'.",
+        ),
+        "weight_decay": Param(
+            WEIGHT_DECAY,
+            type="number",
+            minimum=0.0,
+            title="Weight decay",
+        ),
+        "label_smoothing": Param(
+            LABEL_SMOOTHING,
+            type="number",
+            minimum=0.0,
+            maximum=1.0,
+            title="Label smoothing",
+        ),
+        "epochs": Param(
+            EPOCHS,
+            type="integer",
+            minimum=1,
+            title="Epochs",
+        ),
+        "patience": Param(
+            PATIENCE,
+            type="integer",
+            minimum=0,
+            title="Early-stopping patience",
+        ),
+        "num_workers": Param(
+            NUM_WORKERS,
+            type="integer",
+            minimum=0,
+            title="DataLoader num_workers",
+        ),
+    },
 ) as dag:
 
     start = EmptyOperator(task_id="start")

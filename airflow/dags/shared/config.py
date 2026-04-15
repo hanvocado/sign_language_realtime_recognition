@@ -56,6 +56,16 @@ MINIO_GOLD_ROOT_PREFIX = os.environ.get(
     "MINIO_GOLD_ROOT_PREFIX", f"lakehouse/gold/{DATASET_NAME}/npy/{SEQ_LEN}"
 ).strip("/")
 
+
+def build_minio_gold_root_prefix(seq_len: int | str) -> str:
+    """MinIO Gold prefix for a given seq_len (runtime-parameterized)."""
+    return f"lakehouse/gold/{DATASET_NAME}/npy/{int(seq_len)}".strip("/")
+
+
+def build_local_npy_dir(seq_len: int | str) -> str:
+    """Local npy output dir for a given seq_len (runtime-parameterized)."""
+    return f"{PROJECT_ROOT}/data/{DATASET_NAME}/npy/{int(seq_len)}"
+
 # ── Iceberg / Spark ──────────────────────────────────────────────────
 
 ICEBERG_NAMESPACE = os.environ.get("ICEBERG_NAMESPACE", "sign_language")
