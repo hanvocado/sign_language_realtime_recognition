@@ -300,20 +300,41 @@ def extract_landmarks(**context):
     seq_len       = int(params["seq_len"])
     skip_existing = bool(params["skip_existing"])
     landmarks_dir = build_local_npy_dir(seq_len)
-
-    new_uploads = context["task_instance"].xcom_pull(
-        task_ids="bronze_collect_unprocessed_inputs", key="new_uploads"
-    ) or []
-    if not new_uploads:
-        print("No new uploaded videos to extract landmarks. Skipping extraction step.")
-        context["task_instance"].xcom_push(key="landmarks_dir", value=landmarks_dir)
-        return
-
     preprocessed_dir = LOCAL_PREPROCESSED_DIR
 
     os.makedirs(landmarks_dir, exist_ok=True)
 
+    new_uploads = context["task_instance"].xcom_pull(
+        task_ids="bronze_collect_unprocessed_inputs", key="new_uploads"
+    ) or []
+
     preprocessed_files = list_files(preprocessed_dir, (".mp4", ".avi", ".mov", ".mkv", ".webm"))
+
+    # Detect preprocessed Silver videos missing their .npy counterpart for
+    # THIS seq_len. Without this check, a DAG run triggered with a new
+    # ``seq_len`` Param would skip extraction whenever ``new_uploads`` is
+    # empty, even though the target landmarks_dir is empty.
+    missing_landmarks = [
+        rel for rel in preprocessed_files
+        if not os.path.exists(
+            os.path.join(landmarks_dir, str(Path(rel).with_suffix(".npy")))
+        )
+    ]
+
+    if not new_uploads and not missing_landmarks:
+        print(
+            f"No new uploads and all {len(preprocessed_files)} preprocessed "
+            f"videos already have landmarks at seq_len={seq_len}. Skipping extraction step."
+        )
+        context["task_instance"].xcom_push(key="landmarks_dir", value=landmarks_dir)
+        return
+
+    if not new_uploads and missing_landmarks:
+        print(
+            f"No new Bronze uploads, but {len(missing_landmarks)} preprocessed "
+            f"videos are missing landmarks at seq_len={seq_len} — running extraction."
+        )
+
     print(f"Preprocessed input dir: {preprocessed_dir}")
     print(f"Found {len(preprocessed_files)} preprocessed video file(s)")
     for idx, rel in enumerate(preprocessed_files[:10], start=1):
