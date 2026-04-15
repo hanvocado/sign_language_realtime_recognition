@@ -321,58 +321,124 @@ def extract_landmarks(**context):
         )
     ]
 
-    if not new_uploads and not missing_landmarks:
+    # Decide whether to invoke the extraction subprocess.
+    if not preprocessed_files:
+        print("No preprocessed videos found. Skipping extraction subprocess.")
+    elif not new_uploads and not missing_landmarks:
         print(
             f"No new uploads and all {len(preprocessed_files)} preprocessed "
-            f"videos already have landmarks at seq_len={seq_len}. Skipping extraction step."
+            f"videos already have landmarks at seq_len={seq_len}. "
+            f"Skipping extraction subprocess (will still check Gold for unpublished landmarks)."
         )
-        context["task_instance"].xcom_push(key="landmarks_dir", value=landmarks_dir)
-        return
+    else:
+        if not new_uploads and missing_landmarks:
+            print(
+                f"No new Bronze uploads, but {len(missing_landmarks)} preprocessed "
+                f"videos are missing landmarks at seq_len={seq_len} — running extraction."
+            )
 
-    if not new_uploads and missing_landmarks:
-        print(
-            f"No new Bronze uploads, but {len(missing_landmarks)} preprocessed "
-            f"videos are missing landmarks at seq_len={seq_len} — running extraction."
+        print(f"Preprocessed input dir: {preprocessed_dir}")
+        print(f"Found {len(preprocessed_files)} preprocessed video file(s)")
+        for idx, rel in enumerate(preprocessed_files[:10], start=1):
+            print(f"   [{idx}] {rel}")
+        if len(preprocessed_files) > 10:
+            print(f"   ... and {len(preprocessed_files) - 10} more")
+
+        cmd = [
+            "python", "-u", f"{PROJECT_ROOT}/src/preprocess/video2npy.py",
+            "--input_dir", preprocessed_dir,
+            "--output_dir", landmarks_dir,
+            "--seq_len", str(seq_len),
+        ]
+        if skip_existing:
+            cmd.append("--skip_existing")
+        run_streaming(cmd, cwd=PROJECT_ROOT)
+
+    # Count every preprocessed Silver video whose landmark counterpart now
+    # exists at this seq_len — not just those tied to new_uploads, so a
+    # re-extraction triggered by a seq_len change is reported correctly.
+    silver_landmarks_ready_count = sum(
+        1 for rel in preprocessed_files
+        if os.path.exists(
+            os.path.join(landmarks_dir, str(Path(rel).with_suffix(".npy")))
         )
-
-    print(f"Preprocessed input dir: {preprocessed_dir}")
-    print(f"Found {len(preprocessed_files)} preprocessed video file(s)")
-    for idx, rel in enumerate(preprocessed_files[:10], start=1):
-        print(f"   [{idx}] {rel}")
-    if len(preprocessed_files) > 10:
-        print(f"   ... and {len(preprocessed_files) - 10} more")
-
-    cmd = [
-        "python", "-u", f"{PROJECT_ROOT}/src/preprocess/video2npy.py",
-        "--input_dir", preprocessed_dir,
-        "--output_dir", landmarks_dir,
-        "--seq_len", str(seq_len),
-    ]
-    if skip_existing:
-        cmd.append("--skip_existing")
-    run_streaming(cmd, cwd=PROJECT_ROOT)
-
-    silver_landmarks_ready_count = 0
-    for item in new_uploads:
-        local_input_rel = item.get("local_input_rel", "")
-        label = item.get("label")
-        stem = Path(local_input_rel).stem
-        pattern = os.path.join(preprocessed_dir, label, f"{stem}_*.mp4")
-        segment_files = sorted(glob.glob(pattern))
-        fallback_segment = os.path.join(preprocessed_dir, label, f"{stem}.mp4")
-        if not segment_files and os.path.exists(fallback_segment):
-            segment_files = [fallback_segment]
-
-        for file_path in segment_files:
-            rel_path = os.path.relpath(file_path, preprocessed_dir)
-            rel_npy = str(Path(rel_path).with_suffix(".npy"))
-            npy_path = os.path.join(landmarks_dir, rel_npy)
-            if os.path.exists(npy_path):
-                silver_landmarks_ready_count += 1
+    )
 
     print(f"Gold landmark outputs ready: {silver_landmarks_ready_count} file(s)")
     context["task_instance"].xcom_push(
         key="silver_landmarks_ready_count", value=silver_landmarks_ready_count
+    )
+
+    # ── Detect local landmarks not yet published to the latest Gold snapshot ──
+    # Handles "repair" runs: no new Bronze uploads and every preprocessed video
+    # already has a local .npy at this seq_len, but the landmarks never reached
+    # MinIO Gold (e.g. a previous run failed after extraction, or the landmarks
+    # were produced at a new seq_len for the first time). These candidates are
+    # forwarded to store_to_minio so it can merge them into a Gold snapshot.
+    #
+    # The result is serialized to a JSON file under run_dir (not XCom) because
+    # the list can grow to thousands of entries on repair / new-seq_len runs
+    # and would otherwise risk hitting the XCom size limit.
+    run_ctx         = _ensure_preprocess_run_context(context["task_instance"])
+    run_dir         = run_ctx["run_dir"]
+    os.makedirs(run_dir, exist_ok=True)
+
+    gold_state      = load_gold_state()
+    latest_version  = int(gold_state.get("latest_version", 0))
+    minio_gold_root = build_minio_gold_root_prefix(seq_len)
+
+    published_rel_npys: set[str] = set()
+    if latest_version > 0:
+        latest_prefix = f"{minio_gold_root}/v{latest_version:04d}/"
+        try:
+            for obj in minio_client.list_objects(
+                MINIO_BUCKET, prefix=latest_prefix, recursive=True
+            ):
+                if obj.object_name.endswith(".npy"):
+                    published_rel_npys.add(obj.object_name[len(latest_prefix):])
+        except Exception as exc:
+            print(f"Cannot list latest Gold snapshot prefix {latest_prefix}: {exc}")
+
+    candidates_file = os.path.join(run_dir, "unpublished_gold_candidates.jsonl")
+    unpublished_count = 0
+    with open(candidates_file, "w", encoding="utf-8") as fout:
+        for rel in preprocessed_files:
+            rel_npy    = str(Path(rel).with_suffix(".npy"))
+            local_path = os.path.join(landmarks_dir, rel_npy)
+            if not os.path.exists(local_path):
+                continue
+            if rel_npy in published_rel_npys:
+                continue
+            parts = Path(rel_npy).parts
+            label = parts[0] if len(parts) > 1 else "unknown"
+            fout.write(
+                json.dumps(
+                    {
+                        "label":      label,
+                        "rel_npy":    rel_npy,
+                        "local_path": local_path,
+                        "size_bytes": os.path.getsize(local_path),
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+            unpublished_count += 1
+
+    if unpublished_count:
+        print(
+            f"Detected {unpublished_count} local landmark(s) not yet published "
+            f"to the latest Gold snapshot (seq_len={seq_len}). "
+            f"Written to {candidates_file}"
+        )
+    else:
+        print("All local landmarks are already present in the latest Gold snapshot.")
+
+    context["task_instance"].xcom_push(
+        key="unpublished_gold_candidates_file", value=candidates_file
+    )
+    context["task_instance"].xcom_push(
+        key="unpublished_gold_candidates_count", value=unpublished_count
     )
 
     print("Landmark extraction complete")
@@ -482,6 +548,41 @@ def store_to_minio(**context):
                     "size_bytes": os.path.getsize(item.get("local_input_abs")) if item.get("local_input_abs") and os.path.exists(item.get("local_input_abs")) else 0,
                     "etag": source_etag,
                 }
+            )
+
+    # Merge in local landmarks that extract_landmarks detected as missing from
+    # the latest Gold snapshot (repair path / first-time seq_len publish).
+    # The candidate list is streamed from a JSON-lines file in run_dir to
+    # avoid XCom size limits when the list is large.
+    unpublished_candidates_file = context["task_instance"].xcom_pull(
+        task_ids="gold_extract_landmarks", key="unpublished_gold_candidates_file"
+    )
+    if unpublished_candidates_file and os.path.exists(unpublished_candidates_file):
+        already_queued = {item["rel_npy"] for item in new_landmark_candidates}
+        merged = 0
+        with open(unpublished_candidates_file, "r", encoding="utf-8") as fin:
+            for line in fin:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    cand = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    print(f"Skipping malformed candidate line: {exc}")
+                    continue
+                if cand["rel_npy"] in already_queued:
+                    continue
+                if not os.path.exists(cand["local_path"]):
+                    print(f"Skipping missing local landmark: {cand['local_path']}")
+                    continue
+                new_landmark_candidates.append(cand)
+                already_queued.add(cand["rel_npy"])
+                uploaded_landmark_files += 1
+                merged += 1
+        if merged:
+            print(
+                f"Queued {merged} unpublished landmark(s) from repair path "
+                f"for Gold publish."
             )
 
     print("Silver incremental publish complete")
