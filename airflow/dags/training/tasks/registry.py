@@ -70,10 +70,8 @@ def _get_champion(client: MlflowClient) -> tuple[str | None, float]:
 
     if champion_versions:
         mv   = champion_versions[0]
-        tags = {t.key: t.value for t in client.get_model_version(
-            MLFLOW_MODEL_NAME, mv.version
-        ).tags}
-        acc = float(tags.get("val_acc", 0.0))
+        tags = client.get_model_version(MLFLOW_MODEL_NAME, mv.version).tags or {}
+        acc  = float(tags.get("val_acc", 0.0))
         return mv.version, acc
 
     # Fallback: no champion tag — check for any Production version
