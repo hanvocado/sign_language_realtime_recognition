@@ -15,6 +15,7 @@ from datetime import datetime
 from pathlib import Path
 
 from airflow import DAG
+from airflow.models.param import Param
 from airflow.operators.python import PythonOperator
 from airflow.operators.empty import EmptyOperator
 from airflow.utils.task_group import TaskGroup
@@ -29,7 +30,6 @@ from shared.config import (
     MINIO_USER_UPLOAD_PREFIX,
     MINIO_UPLOAD_PREFIX,
     MINIO_SILVER_PREFIX,
-    MINIO_GOLD_ROOT_PREFIX,
     ICEBERG_NAMESPACE,
     ICEBERG_BRONZE_TABLE,
     ICEBERG_SILVER_RAW_TABLE,
@@ -37,10 +37,11 @@ from shared.config import (
     VIDEO_EXTENSIONS,
     LOCAL_RAW_SOURCE_DIR,
     LOCAL_PREPROCESSED_DIR,
-    LOCAL_NPY_DIR,
     PREPROCESS_INPUT_STAGING_DIR,
     DEFAULT_ARGS,
     minio_client,
+    build_minio_gold_root_prefix,
+    build_local_npy_dir,
 )
 from shared.utils import (
     run_streaming,
@@ -239,6 +240,9 @@ def sync_pending_bronze_inputs(**context):
 def preprocess_videos(**context):
     """Normalize videos using existing preprocessing code"""
 
+    params = context["params"]
+    skip_existing = bool(params["skip_existing"])
+
     new_uploads = context["task_instance"].xcom_pull(
         task_ids="bronze_collect_unprocessed_inputs", key="new_uploads"
     ) or []
@@ -261,15 +265,14 @@ def preprocess_videos(**context):
     if len(video_files) > 10:
         print(f"   ... and {len(video_files) - 10} more")
 
-    run_streaming(
-        [
-            "python", "-u", f"{PROJECT_ROOT}/src/preprocess/preprocess_video.py",
-            "--input_dir", raw_dir,
-            "--output_dir", output_dir,
-            "--skip_existing",
-        ],
-        cwd=PROJECT_ROOT,
-    )
+    cmd = [
+        "python", "-u", f"{PROJECT_ROOT}/src/preprocess/preprocess_video.py",
+        "--input_dir", raw_dir,
+        "--output_dir", output_dir,
+    ]
+    if skip_existing:
+        cmd.append("--skip_existing")
+    run_streaming(cmd, cwd=PROJECT_ROOT)
 
     silver_raw_ready_count = 0
     for item in new_uploads:
@@ -293,16 +296,20 @@ def preprocess_videos(**context):
 def extract_landmarks(**context):
     """Extract MediaPipe landmarks from videos"""
 
+    params        = context["params"]
+    seq_len       = int(params["seq_len"])
+    skip_existing = bool(params["skip_existing"])
+    landmarks_dir = build_local_npy_dir(seq_len)
+
     new_uploads = context["task_instance"].xcom_pull(
         task_ids="bronze_collect_unprocessed_inputs", key="new_uploads"
     ) or []
     if not new_uploads:
         print("No new uploaded videos to extract landmarks. Skipping extraction step.")
-        context["task_instance"].xcom_push(key="landmarks_dir", value=LOCAL_NPY_DIR)
+        context["task_instance"].xcom_push(key="landmarks_dir", value=landmarks_dir)
         return
 
     preprocessed_dir = LOCAL_PREPROCESSED_DIR
-    landmarks_dir = LOCAL_NPY_DIR
 
     os.makedirs(landmarks_dir, exist_ok=True)
 
@@ -314,16 +321,15 @@ def extract_landmarks(**context):
     if len(preprocessed_files) > 10:
         print(f"   ... and {len(preprocessed_files) - 10} more")
 
-    run_streaming(
-        [
-            "python", "-u", f"{PROJECT_ROOT}/src/preprocess/video2npy.py",
-            "--input_dir", preprocessed_dir,
-            "--output_dir", landmarks_dir,
-            "--seq_len", str(SEQ_LEN),
-            "--skip_existing",
-        ],
-        cwd=PROJECT_ROOT,
-    )
+    cmd = [
+        "python", "-u", f"{PROJECT_ROOT}/src/preprocess/video2npy.py",
+        "--input_dir", preprocessed_dir,
+        "--output_dir", landmarks_dir,
+        "--seq_len", str(seq_len),
+    ]
+    if skip_existing:
+        cmd.append("--skip_existing")
+    run_streaming(cmd, cwd=PROJECT_ROOT)
 
     silver_landmarks_ready_count = 0
     for item in new_uploads:
@@ -353,6 +359,10 @@ def extract_landmarks(**context):
 
 def store_to_minio(**context):
     """Upload Silver preprocessed videos and Gold landmarks to MinIO and create manifest"""
+    params                 = context["params"]
+    seq_len                = int(params["seq_len"])
+    minio_gold_root_prefix = build_minio_gold_root_prefix(seq_len)
+
     landmarks_dir = context["task_instance"].xcom_pull(
         task_ids="gold_extract_landmarks", key="landmarks_dir"
     )
@@ -472,10 +482,10 @@ def store_to_minio(**context):
         previous_version = int(gold_state.get("latest_version", 0))
         next_version = previous_version + 1
         gold_version = f"v{next_version:04d}"
-        gold_prefix = f"{MINIO_GOLD_ROOT_PREFIX}/{gold_version}"
+        gold_prefix = f"{minio_gold_root_prefix}/{gold_version}"
 
         if previous_version > 0:
-            previous_prefix = f"{MINIO_GOLD_ROOT_PREFIX}/v{previous_version:04d}/"
+            previous_prefix = f"{minio_gold_root_prefix}/v{previous_version:04d}/"
             copied = 0
             for obj in minio_client.list_objects(MINIO_BUCKET, prefix=previous_prefix, recursive=True):
                 if not obj.object_name.endswith(".npy"):
@@ -536,7 +546,7 @@ def store_to_minio(**context):
         latest_version = int(gold_state.get("latest_version", 0))
         if latest_version > 0:
             gold_version = f"v{latest_version:04d}"
-            gold_prefix = f"{MINIO_GOLD_ROOT_PREFIX}/{gold_version}"
+            gold_prefix = f"{minio_gold_root_prefix}/{gold_version}"
         print("No new landmarks in this run, Gold snapshot version unchanged.")
 
     with open(gold_rows_file, "w", encoding="utf-8") as f:
@@ -560,7 +570,7 @@ def store_to_minio(**context):
         "run_stamp": run_stamp,
         "timestamp": datetime.now().isoformat(),
         "dataset_name": DATASET_NAME,
-        "seq_len": SEQ_LEN,
+        "seq_len": seq_len,
         "local_raw_dir": LOCAL_RAW_SOURCE_DIR,
         "local_preprocessed_dir": preprocessed_dir,
         "minio_preprocessed_prefix": f"{MINIO_SILVER_PREFIX}/{run_month}/{run_stamp}",
@@ -575,7 +585,7 @@ def store_to_minio(**context):
         "minio_bronze_raw_prefix": MINIO_BRONZE_RAW_PREFIX,
         "minio_user_upload_prefix": MINIO_USER_UPLOAD_PREFIX,
         "minio_silver_prefix": MINIO_SILVER_PREFIX,
-        "minio_gold_root_prefix": MINIO_GOLD_ROOT_PREFIX,
+        "minio_gold_root_prefix": minio_gold_root_prefix,
         "gold_version": gold_version,
         "gold_minio_prefix": gold_prefix,
         "iceberg_tables": {
@@ -610,6 +620,25 @@ with DAG(
     catchup=False,
     on_failure_callback=task_failure_email_alert,
     tags=["preprocessing", "sign-language"],
+    params={
+        "seq_len": Param(
+            SEQ_LEN,
+            type="integer",
+            minimum=1,
+            title="Sequence length",
+            description=(
+                "Frames to be sampled per videoclip."
+            ),
+        ),
+        "skip_existing": Param(
+            True,
+            type="boolean",
+            title="Skip existing outputs",
+            description=(
+                "Files already produced are not re-generated."
+            ),
+        ),
+    },
 ) as dag:
     start = EmptyOperator(
         task_id="start",

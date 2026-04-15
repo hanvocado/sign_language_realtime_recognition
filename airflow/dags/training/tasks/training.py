@@ -11,27 +11,11 @@ from mlflow.tracking import MlflowClient
 
 from training.config import (
     PROJECT_ROOT,
-    SEQ_LEN,
     MLFLOW_TRACKING_URI,
     MLFLOW_EXPERIMENT,
     MLFLOW_MODEL_NAME,
-    MODEL_TYPE,
-    HIDDEN_DIM,
-    NUM_LAYERS,
-    DROPOUT,
-    BATCH_SIZE,
-    LR,
-    FINETUNE_LR,
-    WEIGHT_DECAY,
-    LABEL_SMOOTHING,
-    EPOCHS,
-    PATIENCE,
-    NUM_WORKERS,
 )
 from training.utils import run_streaming, ensure_run_context
-
-# Re-export SEQ_LEN so it is importable directly from config
-from src.config.config import SEQ_LEN  # noqa: F401 (already imported above via config.py)
 
 
 def train_model(**context) -> None:
@@ -41,6 +25,7 @@ def train_model(**context) -> None:
         best_val_acc  : float — best validation accuracy achieved
     """
     ti          = context["task_instance"]
+    params      = context["params"]
     split_dir   = ti.xcom_pull(task_ids="split_dataset",          key="split_dir")
     decision    = ti.xcom_pull(task_ids="training_retrain_check", key="decision")
     gold_version = ti.xcom_pull(task_ids="training_retrain_check", key="gold_version")
@@ -50,7 +35,7 @@ def train_model(**context) -> None:
 
     ckpt_dir     = f"{run_ctx['run_dir']}/checkpoints"
     run_id_file  = f"{run_ctx['run_dir']}/mlflow_run_id.txt"
-    effective_lr = str(FINETUNE_LR if decision == "finetune" else LR)
+    effective_lr = str(params["finetune_lr"] if decision == "finetune" else params["lr"])
 
     cmd = [
         "python", "-u",
@@ -62,25 +47,25 @@ def train_model(**context) -> None:
         "--ckpt-dir",        ckpt_dir,
         "--run-name",        run_name,
         "--run-id-output-file", run_id_file,
-        "--model-type",      MODEL_TYPE,
-        "--hidden-dim",      str(HIDDEN_DIM),
-        "--num-layers",      str(NUM_LAYERS),
-        "--dropout",         str(DROPOUT),
+        "--model-type",      params["model_type"],
+        "--hidden-dim",      str(params["hidden_dim"]),
+        "--num-layers",      str(params["num_layers"]),
+        "--dropout",         str(params["dropout"]),
         "--input-dim",       "225",
-        "--seq-len",         str(SEQ_LEN),
-        "--batch-size",      str(BATCH_SIZE),
+        "--seq-len",         str(params["seq_len"]),
+        "--batch-size",      str(params["batch_size"]),
         "--lr",              effective_lr,
-        "--weight-decay",    str(WEIGHT_DECAY),
-        "--label-smoothing", str(LABEL_SMOOTHING),
-        "--epochs",          str(EPOCHS),
-        "--patience",        str(PATIENCE),
-        "--num-workers",     str(NUM_WORKERS),
+        "--weight-decay",    str(params["weight_decay"]),
+        "--label-smoothing", str(params["label_smoothing"]),
+        "--epochs",          str(params["epochs"]),
+        "--patience",        str(params["patience"]),
+        "--num-workers",     str(params["num_workers"]),
         "--normalize",       "true",
         "--augment-train",   "true",
     ]
 
     if decision == "finetune" and base_ckpt:
-        cmd += ["--base-ckpt-uri", base_ckpt, "--finetune-lr", str(FINETUNE_LR)]
+        cmd += ["--base-ckpt-uri", base_ckpt, "--finetune-lr", str(params["finetune_lr"])]
 
     run_streaming(cmd, cwd=PROJECT_ROOT)
 

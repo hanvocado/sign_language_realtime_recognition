@@ -16,8 +16,6 @@ from training.config import (
 )
 from training.utils import run_streaming, ensure_run_context
 
-from src.config.config import SEQ_LEN
-
 
 def evaluate_model(**context) -> None:
     """
@@ -26,6 +24,7 @@ def evaluate_model(**context) -> None:
         eval_report : str   path to eval_report.json (or None)
     """
     ti            = context["task_instance"]
+    params        = context["params"]
     mlflow_run_id = ti.xcom_pull(task_ids="train_model",   key="mlflow_run_id")
     split_dir     = ti.xcom_pull(task_ids="split_dataset", key="split_dir")
     run_ctx       = ensure_run_context(ti)
@@ -46,7 +45,7 @@ def evaluate_model(**context) -> None:
             "--tracking-uri", MLFLOW_TRACKING_URI,
             "--run-id",       mlflow_run_id,
             "--split-dir",    split_dir,
-            "--seq-len",      str(SEQ_LEN),
+            "--seq-len",      str(params["seq_len"]),
             "--output",       eval_out,
         ],
         cwd=PROJECT_ROOT,
