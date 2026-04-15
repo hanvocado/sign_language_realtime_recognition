@@ -17,7 +17,7 @@ python -m src.pipeline.train_mlflow \
     --tracking-uri http://localhost:5000 \
     --experiment-name slr_v1
 
-# Fine-tune from Production checkpoint
+# Fine-tune from champion checkpoint (resolved via models:/<name>@champion alias)
 python -m src.pipeline.train_mlflow \
     --data-dir data/split \
     --model-name SLR_model \

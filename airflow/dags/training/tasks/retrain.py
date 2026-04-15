@@ -1,8 +1,9 @@
 """
 Tasks: retrain decision logic.
 
-retrain_check   — compares the current Gold snapshot against the Production
-                  MLflow model and pushes one of: "skip" | "finetune" | "full"
+retrain_check   — compares the current Gold snapshot against the current
+                  champion model (resolved via MLflow "champion" alias) and
+                  pushes one of: "skip" | "finetune" | "full"
 branch_on_decision — BranchPythonOperator callable that routes the DAG
 """
 
@@ -45,18 +46,19 @@ def _fetch_snapshot_stats(gold_version: str, output_file: str) -> dict:
         return {"labels": [], "total_files": 0}
 
 
-def _fetch_production_model(client: MlflowClient) -> dict | None:
-    """Return metadata for the current Production model version, or None."""
+def _fetch_champion_model(client: MlflowClient) -> dict | None:
+    """
+    Return metadata for the current champion model version, or None.
+
+    Resolves via the "champion" alias on the registered model (replaces
+    the deprecated ``stages=["Production"]`` lookup).
+    """
     try:
-        versions = client.get_latest_versions(MLFLOW_MODEL_NAME, stages=["Production"])
+        mv = client.get_model_version_by_alias(MLFLOW_MODEL_NAME, "champion")
     except Exception as exc:
-        print(f"Could not query MLflow registry: {exc}")
+        print(f"Could not resolve 'champion' alias in MLflow registry: {exc}")
         return None
 
-    if not versions:
-        return None
-
-    mv     = versions[0]
     run    = client.get_run(mv.run_id)
     params = run.data.params
 
@@ -97,7 +99,7 @@ def retrain_check(**context) -> None:
 
     mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
     client   = MlflowClient(MLFLOW_TRACKING_URI)
-    prod     = _fetch_production_model(client)
+    prod     = _fetch_champion_model(client)
 
     def _push(decision, reason, base_run_id=None, base_ckpt_uri=None):
         ti.xcom_push(key="decision",         value=decision)
@@ -111,7 +113,7 @@ def retrain_check(**context) -> None:
         print(f"Decision: {decision.upper()} — {reason}")
 
     if prod is None:
-        _push("full", "No Production model in registry — training from scratch.")
+        _push("full", "No champion model in registry — training from scratch.")
         return
 
     new_labels    = sorted(curr_labels - prod["labels"])
