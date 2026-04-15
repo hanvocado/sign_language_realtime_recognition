@@ -1,9 +1,12 @@
 """
 Task: MLflow model promotion with champion / challenger pattern.
 
-Every model that clears PROMOTE_MIN_ACC is registered and tagged
-"challenger".  It is then compared against the current "champion"
-(the Production model that carries the "champion" tag).
+Uses MLflow model aliases to mark serving roles.
+The registered model carries a "champion" alias that always points to
+the currently-serving version. Newly promoted challengers replace the
+alias target; rejected / retired versions simply have no alias.
+
+Ref: https://mlflow.org/docs/2.11.0/model-registry.html#migrating-from-stages
 
 Promotion rules
 ───────────────
@@ -12,6 +15,12 @@ Promotion rules
   3. challenger val_acc > champion val_acc →  challenger promoted to champion;
                                               old champion re-tagged "retired".
   4. challenger val_acc ≤ champion val_acc →  challenger stays "challenger", no swap.
+
+MLflow aliases
+──────────────
+  champion          → currently-serving version (at most one).
+  challenger        → latest registered challenger that did not beat the champion.
+  previous_champion → most recently dethroned champion (for rollback / comparison).
 
 MLflow version tags set on every registered version
 ────────────────────────────────────────────────────
@@ -40,12 +49,17 @@ from training.utils import (
     save_training_sensor_state,
 )
 
-# Tag key used to identify the active champion version
-_ROLE_TAG = "role"
-_CHAMPION  = "champion"
+# Tag key used to annotate the role of a model version
+_ROLE_TAG   = "role"
+_CHAMPION   = "champion"
 _CHALLENGER = "challenger"
-_RETIRED   = "retired"
-_REJECTED  = "rejected"
+_RETIRED    = "retired"
+_REJECTED   = "rejected"
+
+# MLflow aliases (replacement for deprecated stages)
+_CHAMPION_ALIAS          = "champion"
+_CHALLENGER_ALIAS        = "challenger"
+_PREVIOUS_CHAMPION_ALIAS = "previous_champion"
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -53,46 +67,47 @@ _REJECTED  = "rejected"
 def _get_champion(client: MlflowClient) -> tuple[str | None, float]:
     """
     Return (version, val_acc) of the current champion, or (None, 0.0).
-    Searches all Production versions for the one tagged role=champion using
-    search_model_versions to correctly handle multiple Production versions.
-    Falls back to the latest Production version if no tag is set
-    (handles the migration case where old versions have no role tag).
+
+    Resolves the champion via the "champion" alias on the registered model.
+    Falls back to searching by role tag (handles legacy versions that were
+    tagged before aliases were adopted).
     """
     try:
-        # Use search_model_versions to find Production versions tagged as champion
+        mv = client.get_model_version_by_alias(MLFLOW_MODEL_NAME, _CHAMPION_ALIAS)
+    except Exception:
+        mv = None
+
+    if mv is not None:
+        tags = client.get_model_version(MLFLOW_MODEL_NAME, mv.version).tags or {}
+        acc  = float(tags.get("val_acc", 0.0))
+        return mv.version, acc
+
+    # Fallback: no alias set yet — look for a version tagged role=champion
+    try:
         champion_versions = client.search_model_versions(
             filter_string=f"name='{MLFLOW_MODEL_NAME}' and tag.{_ROLE_TAG}='{_CHAMPION}'"
         )
-        # Filter to only Production stage
-        champion_versions = [mv for mv in champion_versions if mv.current_stage == "Production"]
     except Exception:
         champion_versions = []
 
-    if champion_versions:
-        mv   = champion_versions[0]
-        tags = {t.key: t.value for t in client.get_model_version(
-            MLFLOW_MODEL_NAME, mv.version
-        ).tags}
-        acc = float(tags.get("val_acc", 0.0))
-        return mv.version, acc
-
-    # Fallback: no champion tag — check for any Production version
-    try:
-        versions = client.search_model_versions(
-            filter_string=f"name='{MLFLOW_MODEL_NAME}'"
-        )
-        prod_versions = [mv for mv in versions if mv.current_stage == "Production"]
-    except Exception:
+    if not champion_versions:
         return None, 0.0
 
-    if not prod_versions:
-        return None, 0.0
-
-    # Use the latest Production version as fallback
-    mv  = sorted(prod_versions, key=lambda v: int(v.version), reverse=True)[0]
-    run = client.get_run(mv.run_id)
-    acc = run.data.metrics.get("best_val_acc", 0.0)
+    mv   = sorted(champion_versions, key=lambda v: int(v.version), reverse=True)[0]
+    tags = client.get_model_version(MLFLOW_MODEL_NAME, mv.version).tags or {}
+    acc  = float(tags.get("val_acc", 0.0))
     return mv.version, acc
+
+
+def _set_alias(client: MlflowClient, alias: str, version: str) -> None:
+    client.set_registered_model_alias(MLFLOW_MODEL_NAME, alias, version)
+
+
+def _delete_alias(client: MlflowClient, alias: str) -> None:
+    try:
+        client.delete_registered_model_alias(MLFLOW_MODEL_NAME, alias)
+    except Exception:
+        pass
 
 
 def _tag_version(
@@ -119,16 +134,6 @@ def _register_version(mlflow_run_id: str) -> str:
     artifact_uri = f"runs:/{mlflow_run_id}/model"
     mv = mlflow.register_model(artifact_uri, MLFLOW_MODEL_NAME)
     return mv.version
-
-
-def _transition(client: MlflowClient, version: str, stage: str,
-                archive_existing: bool = False) -> None:
-    client.transition_model_version_stage(
-        name=MLFLOW_MODEL_NAME,
-        version=version,
-        stage=stage,
-        archive_existing_versions=archive_existing,
-    )
 
 
 # ── Task callable ─────────────────────────────────────────────────────
@@ -158,7 +163,6 @@ def promote_or_skip(**context) -> None:
             f"— registering as '{_REJECTED}', no promotion."
         )
         version = _register_version(mlflow_run_id)
-        _transition(client, version, "Archived")
         _tag_version(client, version, _REJECTED, best_val_acc, gold_version, trained_at)
 
         ti.xcom_push(key="promoted",       value=False)
@@ -170,7 +174,6 @@ def promote_or_skip(**context) -> None:
 
     # ── Step 2: register challenger ──
     version = _register_version(mlflow_run_id)
-    _transition(client, version, "Staging")
     print(f"Registered challenger: '{MLFLOW_MODEL_NAME}' v{version} (val_acc={best_val_acc:.4f})")
 
     # ── Step 3: compare against current champion ──
@@ -179,7 +182,8 @@ def promote_or_skip(**context) -> None:
     if champ_version is None:
         # No champion yet — first model wins automatically
         print(f"No champion found. Crowning v{version} as first champion.")
-        _transition(client, version, "Production", archive_existing=False)
+        _set_alias(client, _CHAMPION_ALIAS, version)
+        _delete_alias(client, _CHALLENGER_ALIAS)
         _tag_version(client, version, _CHAMPION, best_val_acc, gold_version, trained_at)
 
         ti.xcom_push(key="promoted",       value=True)
@@ -193,7 +197,7 @@ def promote_or_skip(**context) -> None:
             f"Challenger v{version} ({best_val_acc:.4f}) beats "
             f"champion v{champ_version} ({champ_acc:.4f}) — promoting."
         )
-        # Retire the old champion first, preserving its original provenance tags
+        # Retire the old champion, preserving its original provenance tags
         client.set_model_version_tag(MLFLOW_MODEL_NAME, champ_version, _ROLE_TAG, _RETIRED)
         client.set_model_version_tag(
             MLFLOW_MODEL_NAME, champ_version, "retired_at", datetime.now().isoformat()
@@ -201,10 +205,14 @@ def promote_or_skip(**context) -> None:
         client.set_model_version_tag(
             MLFLOW_MODEL_NAME, champ_version, "retired_by_version", str(version)
         )
-        _transition(client, champ_version, "Archived", archive_existing=False)
+        # Point the "previous_champion" alias at the dethroned version so it
+        # stays resolvable for rollback / comparison. This overwrites any
+        # prior previous_champion automatically.
+        _set_alias(client, _PREVIOUS_CHAMPION_ALIAS, champ_version)
 
-        # Crown the new champion
-        _transition(client, version, "Production", archive_existing=False)
+        # Reassign the champion alias (implicitly drops the old champion from the alias)
+        _set_alias(client, _CHAMPION_ALIAS, version)
+        _delete_alias(client, _CHALLENGER_ALIAS)
         _tag_version(client, version, _CHAMPION, best_val_acc, gold_version, trained_at)
 
         ti.xcom_push(key="promoted",       value=True)
@@ -218,8 +226,8 @@ def promote_or_skip(**context) -> None:
             f"Challenger v{version} ({best_val_acc:.4f}) did not beat "
             f"champion v{champ_version} ({champ_acc:.4f}) — keeping champion."
         )
+        _set_alias(client, _CHALLENGER_ALIAS, version)
         _tag_version(client, version, _CHALLENGER, best_val_acc, gold_version, trained_at)
-        # Leave in Staging so it's visible but not serving traffic
 
         ti.xcom_push(key="promoted",       value=False)
         ti.xcom_push(key="challenger_ver", value=version)
