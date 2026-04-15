@@ -18,8 +18,9 @@ Promotion rules
 
 MLflow aliases
 ──────────────
-  champion   → currently-serving version (at most one).
-  challenger → latest registered challenger that did not beat the champion.
+  champion          → currently-serving version (at most one).
+  challenger        → latest registered challenger that did not beat the champion.
+  previous_champion → most recently dethroned champion (for rollback / comparison).
 
 MLflow version tags set on every registered version
 ────────────────────────────────────────────────────
@@ -56,8 +57,9 @@ _RETIRED    = "retired"
 _REJECTED   = "rejected"
 
 # MLflow aliases (replacement for deprecated stages)
-_CHAMPION_ALIAS   = "champion"
-_CHALLENGER_ALIAS = "challenger"
+_CHAMPION_ALIAS          = "champion"
+_CHALLENGER_ALIAS        = "challenger"
+_PREVIOUS_CHAMPION_ALIAS = "previous_champion"
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -203,6 +205,10 @@ def promote_or_skip(**context) -> None:
         client.set_model_version_tag(
             MLFLOW_MODEL_NAME, champ_version, "retired_by_version", str(version)
         )
+        # Point the "previous_champion" alias at the dethroned version so it
+        # stays resolvable for rollback / comparison. This overwrites any
+        # prior previous_champion automatically.
+        _set_alias(client, _PREVIOUS_CHAMPION_ALIAS, champ_version)
 
         # Reassign the champion alias (implicitly drops the old champion from the alias)
         _set_alias(client, _CHAMPION_ALIAS, version)
